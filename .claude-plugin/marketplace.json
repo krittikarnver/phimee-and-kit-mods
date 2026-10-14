@@ -1,0 +1,32 @@
+{
+  "name": "phimee-and-kit-mods",
+  "description": "Claude Code mods ของพี่หมีกับกิต",
+  "owner": {
+    "name": "Kit"
+  },
+  "plugins": [
+    {
+      "name": "kit-time",
+      "source": "./plugins/kit-time",
+      "description": "ให้ Claude รู้เวลาไทยและระยะห่างจากข้อความก่อนหน้าทุกครั้งที่ส่งข้อความ"
+    },
+    {
+      "name": "kit-usage",
+      "source": "./plugins/kit-usage",
+      "description": "บอก Claude ว่า context และ rate limit ใช้ไปเท่าไหร่ เตือนก่อนใกล้ compact"
+    },
+    {
+      "name": "kit-scrutinize",
+      "source": "./plugins/kit-scrutinize",
+      "description": "/scrutinize-loop รีวิว spec หรือ plan ซ้ำด้วย subagent จนไม่เหลือ blocker และ major (ติดตั้ง 9arm-skills ให้อัตโนมัติ)"
+    },
+    {
+      "name": "9arm-skills",
+      "source": {
+        "source": "github",
+        "repo": "thananon/9arm-skills"
+      },
+      "description": "skills ของ 9arm (scrutinize, debug-mantra, post-mortem ฯลฯ) ดึงจาก repo ต้นฉบับ ติดตั้งให้อัตโนมัติพร้อม kit-scrutinize"
+    }
+  ]
+}

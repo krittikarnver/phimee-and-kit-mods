@@ -1,0 +1,1 @@
+{ "name": "kit-usage", "version": "0.1.1", "description": "บอก Claude ว่า context ของ session นี้ใช้ไปเท่าไหร่ และ rate limit ถึงไหนแล้ว ทุกครั้งที่ส่งข้อความ เตือนก่อนใกล้ compact", "author": { "name": "Kit" }, "types": "./types/index.d.ts" }

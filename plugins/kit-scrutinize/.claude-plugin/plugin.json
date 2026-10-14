@@ -1,0 +1,11 @@
+{
+  "name": "kit-scrutinize",
+  "version": "0.2.0",
+  "description": "/scrutinize-loop รีวิว spec หรือ plan ด้วย scrutinize skill ใน subagent แล้วแก้ตาม วนอย่างน้อย 3 รอบ จนไม่เหลือ blocker และ major",
+  "author": {
+    "name": "Kit"
+  },
+  "dependencies": [
+    "9arm-skills"
+  ]
+}

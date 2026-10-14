@@ -1,0 +1,1 @@
+{ "name": "kit-time", "version": "0.2.0", "description": "แปะเวลาไทยและระยะห่างจากข้อความก่อน ให้ Claude รู้เวลาทุกครั้งที่ส่งข้อความ พร้อมแถบเวลาเหนือช่องพิมพ์", "author": { "name": "Kit" }, "types": "./types/index.d.ts" }
