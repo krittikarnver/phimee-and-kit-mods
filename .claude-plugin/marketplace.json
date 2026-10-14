@@ -21,6 +21,11 @@
       "description": "/scrutinize-loop รีวิว spec หรือ plan ซ้ำด้วย subagent จนไม่เหลือ blocker และ major (ติดตั้ง 9arm-skills ให้อัตโนมัติ)"
     },
     {
+      "name": "kit-update",
+      "source": "./plugins/kit-update",
+      "description": "/kit-update:all อัปเดต plugin ทุกตัวที่ติดตั้งไว้ในคำสั่งเดียว แล้วสรุปว่าตัวไหนเปลี่ยน version"
+    },
+    {
       "name": "9arm-skills",
       "source": {
         "source": "github",

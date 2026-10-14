@@ -11,6 +11,7 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 /plugin install kit-time@phimee-and-kit-mods
 /plugin install kit-usage@phimee-and-kit-mods
 /plugin install kit-scrutinize@phimee-and-kit-mods
+/plugin install kit-update@phimee-and-kit-mods
 ```
 
 เลือกติดตั้งเฉพาะตัวที่อยากใช้ก็ได้ แต่ละตัวทำงานแยกกัน
@@ -43,6 +44,20 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 - subagent อ่านไฟล์ได้อย่างเดียว แก้ไฟล์ไม่ได้
 
 ตัวรีวิวใช้ [scrutinize skill ของ 9arm](https://github.com/thananon/9arm-skills/tree/main/skills/engineering/scrutinize) ติดตั้ง kit-scrutinize แล้ว plugin `9arm-skills` จะถูกติดตั้งให้อัตโนมัติ ดึงจาก [repo ของ 9arm](https://github.com/thananon/9arm-skills) ตรงๆ และอัปเดตตามต้นฉบับ ขอบคุณที่แบ่งปันครับ
+
+### kit-update
+
+`claude plugin update` อัปเดตได้ทีละตัว ไม่มี `--all` ตัวนี้เลยทำให้จบในคำสั่งเดียว
+
+- `/kit-update:check` dry-run ดูก่อนว่าจะอัปเดตตัวไหนบ้าง ไม่แตะอะไร
+- `/kit-update:all` refresh marketplace ทั้งหมด → อัปเดตทุก install ตาม scope ของมัน → สรุปว่าตัวไหนเปลี่ยนจาก version ไหนเป็นอะไร (diff จาก `plugin list --json` ก่อน-หลัง ไม่ได้เชื่อแค่ว่าคำสั่งตอบ ok)
+- เสร็จแล้วพิมพ์ `/reload-plugins` เอง Claude สั่งแทนไม่ได้
+- ส่ง flag ต่อท้ายได้: `--only '<regex>'`, `--scope user,project`, `--all-projects`, `--no-marketplaces`
+- install ระดับ project/local อัปเดตเฉพาะของ project ปัจจุบัน ของ project อื่นต้องใส่ `--all-projects`
+- ข้าม plugin ที่ไม่ได้มาจาก marketplace (`@synced`, `@inline`, `@skills-dir`)
+- ถ้า plugin ที่ใช้ command source เปลี่ยน install command, Claude Code ไม่ให้ accept จากใน session จะได้คำสั่ง `--accept-command <sha256>` ไว้ review แล้วรันเองใน terminal
+
+ต้องใช้ Claude Code v2.1.268 ขึ้นไป และต้องมี `jq` รันจาก terminal ตรงๆ ก็ได้: `bash plugins/kit-update/scripts/update-all.sh --help`
 
 ## พัฒนา
 
