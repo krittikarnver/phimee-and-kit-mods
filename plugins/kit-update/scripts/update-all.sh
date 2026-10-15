@@ -152,16 +152,28 @@ while IFS=$'\t' read -r id scope ver proj; do
   targets+=("$id"$'\t'"$scope"$'\t'"$ver"$'\t'"$proj")
 done <"$TMP/targets.tsv"
 
+print_nonmkt() {
+  if [[ -s "$TMP/nonmkt.txt" ]]; then
+    echo "  Not updatable here (session / skills-dir / claude.ai-synced):"
+    sed 's/^/    - /' "$TMP/nonmkt.txt"
+  fi
+}
+
 total=${#targets[@]}
 if ((total == 0)); then
   step "No marketplace-installed plugins to update"
   ((${#skipped[@]})) && printf '    skipped: %s\n' "${skipped[@]}"
+  print_nonmkt
   exit 0
 fi
 
 # ---------- 3. update each ---------------------------------------------------
 
-step "Updating $total plugin install(s)"
+if ((DRY_RUN)); then
+  step "Would check $total plugin install(s) for updates (a dry run can't tell which have a newer version)"
+else
+  step "Updating $total plugin install(s)"
+fi
 failed=() needs_terminal=()
 i=0
 for row in "${targets[@]}"; do
@@ -170,7 +182,7 @@ for row in "${targets[@]}"; do
   label="$id ${DIM}[$scope${proj:+ · $proj}]${N}"
 
   if ((DRY_RUN)); then
-    printf '    [%d/%d] %s  %s(would update from %s)%s\n' "$i" "$total" "$label" "$DIM" "$ver" "$N"
+    printf '    [%d/%d] %s  %s(installed: %s)%s\n' "$i" "$total" "$label" "$DIM" "$ver" "$N"
     continue
   fi
 
@@ -206,6 +218,7 @@ if ((DRY_RUN)); then
   echo
   step "Dry run — nothing changed"
   ((${#skipped[@]})) && { echo "  Skipped:"; printf '    - %s\n' "${skipped[@]}"; }
+  print_nonmkt
   exit 0
 fi
 
@@ -237,10 +250,7 @@ if ((n_changed)); then
 fi
 ((n_failed)) && { echo "  Failed:"; printf '    - %s\n' "${failed[@]}"; }
 ((${#skipped[@]})) && { echo "  Skipped:"; printf '    - %s\n' "${skipped[@]}"; }
-if [[ -s "$TMP/nonmkt.txt" ]]; then
-  echo "  Not updatable here (session / skills-dir / claude.ai-synced):"
-  sed 's/^/    - /' "$TMP/nonmkt.txt"
-fi
+print_nonmkt
 if ((${#needs_terminal[@]})); then
   echo "  These need you to accept a changed install command — review it, then run from your own terminal:"
   printf '    %s\n' "${needs_terminal[@]}"

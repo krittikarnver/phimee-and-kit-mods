@@ -49,12 +49,14 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 
 `claude plugin update` อัปเดตได้ทีละตัว ไม่มี `--all` ตัวนี้เลยทำให้จบในคำสั่งเดียว
 
-- `/kit-update:check` dry-run ดูก่อนว่าจะอัปเดตตัวไหนบ้าง ไม่แตะอะไร
+- `/kit-update:check` dry-run ดูก่อนว่าจะไล่เช็คตัวไหนบ้าง ไม่แตะอะไร (ยังบอกไม่ได้ว่าตัวไหนมี version ใหม่ ต้องรัน `/kit-update:all` ถึงจะรู้)
 - `/kit-update:all` refresh marketplace ทั้งหมด → อัปเดตทุก install ตาม scope ของมัน → สรุปว่าตัวไหนเปลี่ยนจาก version ไหนเป็นอะไร (diff จาก `plugin list --json` ก่อน-หลัง ไม่ได้เชื่อแค่ว่าคำสั่งตอบ ok)
 - เสร็จแล้วพิมพ์ `/reload-plugins` เอง Claude สั่งแทนไม่ได้
 - ส่ง flag ต่อท้ายได้: `--only '<regex>'`, `--scope user,project`, `--all-projects`, `--no-marketplaces`
 - install ระดับ project/local อัปเดตเฉพาะของ project ปัจจุบัน ของ project อื่นต้องใส่ `--all-projects`
-- ข้าม plugin ที่ไม่ได้มาจาก marketplace (`@synced`, `@inline`, `@skills-dir`)
+- ข้าม plugin ที่ไม่ได้มาจาก marketplace (`@synced`, `@inline`, `@skills-dir`) แล้วบอกรายชื่อไว้ท้ายสรุป
+  - `@synced` คือ plugin ที่ sync มาจาก claude.ai (เช่นใน cloud session) ตัวพวกนี้อัปเดตผ่าน claude.ai ไม่ใช่ที่นี่
+  - ถ้าใช้ kit-scrutinize แบบ sync ต้อง sync `9arm-skills` ไปด้วย ไม่งั้น kit-scrutinize จะถูกปิดเพราะหา dependency ไม่เจอ
 - ถ้า plugin ที่ใช้ command source เปลี่ยน install command, Claude Code ไม่ให้ accept จากใน session จะได้คำสั่ง `--accept-command <sha256>` ไว้ review แล้วรันเองใน terminal
 
 ต้องใช้ Claude Code v2.1.268 ขึ้นไป และต้องมี `jq` รันจาก terminal ตรงๆ ก็ได้: `bash plugins/kit-update/scripts/update-all.sh --help`
