@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import type { CallFacts } from './logic'
+import type { CallFacts, Rate } from './logic'
 import { MSG, burn, guard, handoffDoc, handoffPath, pickLimits, refusal, resetsGen, stamp, startText, warnLevel, warnText } from './logic'
 
 test('warn levels and dedupe', () => {
@@ -29,7 +29,7 @@ test('warn text', () => {
 })
 
 const ok: CallFacts = { content: 'x', tokens: 450_000, quiet: false, phase: 'none', tools: 0, prompts: 0, busyAgents: 0 }
-const both = [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 10 }]
+const both: [Rate, Rate] = [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 10 }]
 const now = Date.UTC(2026, 9, 17, 11, 55, 7) // 18:55:07 Bangkok
 
 test('refusal reasons in order', () => {

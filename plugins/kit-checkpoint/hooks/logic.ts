@@ -69,8 +69,10 @@ export const warnLevel = (tokens: number | undefined, lastWarned: number | null)
 /** Context growth over the last BURN_CALLS tool calls; history runs oldest to newest. */
 export const burn = (history: readonly number[]): Burn | null => {
   const last = history.slice(-(BURN_CALLS + 1))
-  if (last.length < 2) return null
-  return { grew: last[last.length - 1] - last[0], calls: last.length - 1 }
+  const oldest = last[0]
+  const newest = last[last.length - 1]
+  if (last.length < 2 || oldest === undefined || newest === undefined) return null
+  return { grew: newest - oldest, calls: last.length - 1 }
 }
 
 export const warnText = (level: Level, tokens: number, b: Burn | null): string => {

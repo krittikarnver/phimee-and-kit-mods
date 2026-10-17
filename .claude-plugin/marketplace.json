@@ -26,6 +26,11 @@
       "description": "/kit-update:all อัปเดต plugin ทุกตัวที่ติดตั้งไว้ในคำสั่งเดียว แล้วสรุปว่าตัวไหนเปลี่ยน version"
     },
     {
+      "name": "kit-checkpoint",
+      "source": "./plugins/kit-checkpoint",
+      "description": "เตือน Claude ตอน context เกิน 400K/500K ให้เขียน handoff แล้ว /clear และทำงานต่อเองในบทสนทนาใหม่"
+    },
+    {
       "name": "9arm-skills",
       "source": {
         "source": "github",

@@ -1,33 +1,34 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { AgentStatus, On, PromptOrigin } from 'claude-code'
 
 import { MSG, TOOL } from './logic'
 
 const T0 = Date.UTC(2026, 9, 17, 12, 0, 0) // 19:00:00 Bangkok
+const DENIED = 'mcp__test__denied' // a tool whose call the world refuses
 
 // The world beneath the plugin: every op it calls on $, answered from `w`.
 function world(on: On) {
   const w = {
     tokens: 450_000 as number | undefined, sid: 'sid-1', startedAt: 1,
     rate: [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 10 }],
-    agents: [] as { id: string; status: string }[],
+    agents: [] as { id: string; status: AgentStatus }[],
     files: new Map<string, string>(), commands: [] as string[], submits: [] as string[], notes: [] as string[], specs: [] as unknown[],
     toolsRan: [] as string[], git: true, clear: 'works' as 'works' | 'noop' | 'reject', submit: 'ok' as 'ok' | 'drop',
     holdWrite: 0, holdClear: 0, holdList: 0, usageThrows: false, notifyThrows: false, writeThrows: false,
   }
   const clock = mock.clock(on, { now: T0 })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
-  on('tool.register', async (_$, e) => { w.specs.push(e); return { value: {} } })
+  on('tool.register', async (_$, e) => { w.specs.push(e); return { value: { tool: e.name } } })
   on('session.usage', async () => {
     if (w.usageThrows) throw new Error('usage')
     return { value: { startedAt: w.startedAt, context: { tokens: w.tokens, window: 1_000_000 }, rateLimits: w.rate } }
   })
   on('session.id', async () => ({ value: w.sid }))
-  on('agent.list', async () => { if (w.holdList) await clock.sleep(w.holdList); return { value: w.agents } })
+  on('agent.list', async () => { if (w.holdList) await clock.sleep(w.holdList); return { value: w.agents.map(a => ({ description: '', type: 'test', ...a })) } })
   on('process.run', async () => ({ value: w.git
-    ? { stdout: '/repo/.git\n', stderr: '', exitCode: 0 }
-    : { stdout: '', stderr: 'fatal: not a git repository', exitCode: 128 } }))
+    ? { stdout: '/repo/.git\n', stderr: '', exitCode: 0, isStdoutTruncated: false, isStderrTruncated: false }
+    : { stdout: '', stderr: 'fatal: not a git repository', exitCode: 128, isStdoutTruncated: false, isStderrTruncated: false } }))
   on('fs.exists', async (_$, e) => ({ value: w.files.has(e.path) }))
   on('fs.write', async (_$, e) => {
     if (w.holdWrite) await clock.sleep(w.holdWrite)
@@ -45,14 +46,14 @@ function world(on: On) {
   on('ui.notify', async (_$, e) => {
     w.notes.push(e.text)
     if (w.notifyThrows) throw new Error('notify')
-    return { value: { isSent: true, channel: 'test' } }
+    return { value: { isSent: true as const, channel: 'ghostty' as const } }
   })
   on('prompt.submit', async (_$, e) => {
     if (e.origin.kind !== 'plugin') return { text: e.text, context: e.context }
     w.submits.push(e.text)
     return w.submit === 'drop' ? { drop: 'test' } : { text: e.text }
   })
-  on('tool.call', async (_$, e) => { w.toolsRan.push(e.tool); return e.tool === 'Denied' ? { deny: 'no' } : { result: `ran ${e.tool}` } })
+  on('tool.call', async (_$, e) => { w.toolsRan.push(e.tool); return e.tool === DENIED ? { deny: 'no' } : { result: `ran ${e.tool}` } })
   on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
   on('turn.step', async function* (_$, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
@@ -64,11 +65,13 @@ function world(on: On) {
 type World = ReturnType<typeof world>
 
 // drivers: the test plays the engine
-const step = async ($: Engine, turnId: string, agentId?: string) => { for await (const _ of $.turn.step({ turnId, index: 0, model: 'test', agentId })) {} }
-const user = ($: Engine, text: string, kind = 'composer') => $.prompt.submit({ text, origin: { kind }, wait: false })
+const step = async ($: Engine, turnId: string, agentId?: string) => { for await (const _ of $.turn.step({ turnId, index: 0, model: 'test', messageCount: 1, agentId })) {} }
+const user = ($: Engine, text: string, kind: PromptOrigin['kind'] = 'composer') =>
+  $.prompt.submit({ text, origin: { kind } as PromptOrigin, wait: false })
 const done = ($: Engine, turnId: string, isAborted = false) =>
   $.turn.complete({ turnId, answer: '', durationMs: 1, isAborted, reason: isAborted ? 'aborted' : 'answer' })
-const bash = ($: Engine, agentId?: string) => $.tool.call({ tool: 'Bash', input: { command: 'ls' }, agentId })
+// agentId is how the engine marks a subagent's call; the test's $.tool.call types leave it out
+const bash = ($: Engine, agentId?: string) => $.tool.call({ tool: 'Bash', command: 'ls', agentId } as { tool: 'Bash'; command: string })
 const handoff = ($: Engine, mode = 'auto', content = '# งาน\nขั้นต่อไป: X') => $.tool.call({ tool: TOOL, content, mode, reason: 'ทดสอบ' })
 const ctx = (r: { context?: readonly string[] }) => (r.context ?? []).join('\n')
 
@@ -83,7 +86,7 @@ test('warns at 400K, again at +25K, hard at 500K', async ($, on) => {
 test('denied result gets no warning, the next result does', async ($, on) => {
   const { w } = world(on)
   w.tokens = 410_000
-  expect((await $.tool.call({ tool: 'Denied', input: {} })).context).toBeUndefined()
+  expect((await $.tool.call({ tool: DENIED })).context).toBeUndefined()
   expect(ctx(await bash($))).toContain(MSG.soft)
 })
 
@@ -247,7 +250,7 @@ test('auto: clear then framed start message', async ($, on) => {
   await cycle($, w, clock, 'T1')
   expect(w.commands).toEqual(['clear'])
   expect(w.submits).toHaveLength(1)
-  expect(w.submits[0].startsWith(`[kit-checkpoint #1] ${P1}\n\n# งาน`)).toBe(true)
+  expect(w.submits[0]?.startsWith(`[kit-checkpoint #1] ${P1}\n\n# งาน`)).toBe(true)
   expect(w.submits[0]).toContain(MSG.goOn)
 })
 
@@ -265,7 +268,7 @@ test('fourth generation waits; a user reply resets it', async ($, on) => {
   expect(w.submits[3]).not.toContain(MSG.goOn)
   await user($, 'ไปต่อ')
   await cycle($, w, clock, 'T5')
-  expect(w.submits[4].startsWith('[kit-checkpoint #1]')).toBe(true)
+  expect(w.submits[4]?.startsWith('[kit-checkpoint #1]')).toBe(true)
 })
 
 test('task notifications do not reset the generation', async ($, on) => {
@@ -273,7 +276,7 @@ test('task notifications do not reset the generation', async ($, on) => {
   await cycle($, w, clock, 'T1')
   await user($, '<task-notification>', 'task-notification')
   await cycle($, w, clock, 'T2')
-  expect(w.submits[1].startsWith('[kit-checkpoint #2]')).toBe(true)
+  expect(w.submits[1]?.startsWith('[kit-checkpoint #2]')).toBe(true)
 })
 
 test('rate limits: missing waits, fresh cache passes, stale cache waits', async ($, on) => {
@@ -309,7 +312,7 @@ test('a prompt while finalize is checking cancels before the clear', async ($, o
 test('delivery and a foreign turn cancel', async ($, on) => {
   const { w, clock } = world(on)
   await step($, 'T1'); await handoff($)
-  await $.session.append({ door: 'delivery', message: { type: 'user', message: { role: 'user', content: 'x' } } })
+  await $.session.append({ door: 'delivery', origin: { kind: 'task-notification' }, uuid: 'u1', message: { type: 'user', role: 'user', content: [{ type: 'text', text: 'x' }] } })
   await done($, 'T1'); await clock.settle()
   await step($, 'T2'); await handoff($)
   await $.turn.start({ text: 'อีกเรื่อง', turnId: 'T3' })
@@ -360,7 +363,7 @@ test('a prompt while committed gets the handoff and suppresses the start message
   expect(w.submits).toEqual([])
   w.holdClear = 0
   await cycle($, w, clock, 'T2') // userRepliedAfterCommit → gen 0 → next is #1
-  expect(w.submits[0].startsWith('[kit-checkpoint #1]')).toBe(true)
+  expect(w.submits[0]?.startsWith('[kit-checkpoint #1]')).toBe(true)
 })
 
 test('a turn that slips in before the clear gets quoted in a wait message', async ($, on) => {
@@ -395,7 +398,7 @@ test('an old finalize never touches a newer record', async ($, on) => {
   expect(w.commands).toEqual([])
   await done($, 'T2'); await clock.settle()
   expect(w.commands).toEqual(['clear'])
-  expect(w.submits[0]).toContain(b.result.match(/\/repo\S+\.md/)![0])
+  expect(w.submits[0]).toContain(String(b.result).match(/\/repo\S+\.md/)![0])
 })
 
 test('notify failures never stop the flow', async ($, on) => {
