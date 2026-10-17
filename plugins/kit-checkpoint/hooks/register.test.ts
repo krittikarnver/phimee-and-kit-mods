@@ -415,3 +415,33 @@ test('notify failures never stop the flow', async ($, on) => {
   expect((await cycle($, w, clock, 'T3')).result).toContain('บันทึก handoff ไว้ที่') // สถานะกลับเป็น none
   expect(w.commands).toEqual(['clear', 'clear'])
 })
+
+test('a usage failure after the clear still sends the handoff', async ($, on) => {
+  const { w, clock } = world(on)
+  w.holdClear = 5
+  await step($, 'T1'); await handoff($); await done($, 'T1')
+  await clock.settle() // finalize waits on command.run
+  w.usageThrows = true
+  await clock.advance(5)
+  expect(w.sid).toBe('sid-1+')
+  expect(w.submits).toHaveLength(1)
+})
+
+test('a failed generation write still sends the handoff, but waits', async ($, on) => {
+  on('state.set', async () => ({ deny: 'policy' }))
+  const { w, clock } = world(on)
+  await cycle($, w, clock, 'T1')
+  expect(w.commands).toEqual(['clear'])
+  expect(w.submits).toHaveLength(1)
+  expect(w.submits[0]).not.toContain(MSG.goOn)
+})
+
+test('startedAt change at high context lifts quiet after the next model response', async ($, on) => {
+  const { w } = world(on)
+  w.tokens = 120_000; await bash($)
+  w.startedAt = 99; w.tokens = 450_000 // เช่น /resume เข้าบทสนทนาใหญ่
+  expect(ctx(await bash($))).toBe('')
+  await step($, 'T1')
+  w.tokens = 520_000
+  expect(ctx(await bash($))).toContain(MSG.hard)
+})

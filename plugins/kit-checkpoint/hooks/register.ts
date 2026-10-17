@@ -5,7 +5,7 @@ import {
   BURN_CALLS, BUSY, MSG, SOFT, TOOL, TOOL_NAME,
   burn, guard, handoffDoc, handoffPath, pickLimits, refusal, resetsGen, startText, warnLevel, warnText,
 } from './logic'
-import type { Mode, Rate } from './logic'
+import type { Mode, Rate, Verdict } from './logic'
 
 // The generation of the current conversation; kept in $.state so it outlives a reload.
 const gen = atom({ plugin: 'kit-checkpoint', key: 'gen' } as const, 0)
@@ -190,23 +190,29 @@ async function finalize($: EngineInterface, mine: Rec): Promise<void> {
     const ran = await $.command.run({ command: 'clear' }).then(() => true, () => false)
     mine.cleared = true
 
-    const after = await $.session.usage()
-    const sidAfter = await $.session.id()
-    if (!ran || (sidAfter === sid && after.startedAt === startedAt)) {
+    // The conversation may already be gone: a failed read here must not stop the handoff from being sent.
+    const sidAfter = await $.session.id().catch(() => sid)
+    const after = await $.session.usage().catch(() => null)
+    if (!ran || (sidAfter === sid && (after === null || after.startedAt === startedAt))) {
       s.quiet = false
       void notify($, `clear ไม่สำเร็จ บทสนทนาเดิมยังอยู่ handoff อยู่ที่ ${mine.path}`)
       return
     }
     confirmed = true
 
-    await update($, gen, () => (mine.userRepliedAfterCommit ? 0 : mine.gen))
+    let verdict: Verdict
+    try {
+      await update($, gen, () => (mine.userRepliedAfterCommit ? 0 : mine.gen))
+      verdict = guard(mine.mode, mine.gen, pickLimits(after?.rateLimits ?? [], s.rate, await $.clock.now()))
+    } catch {
+      // Without a saved generation the auto-continue cap cannot hold, so wait.
+      verdict = { auto: false, blocked: 'บันทึกตัวนับรุ่นไม่ได้' }
+    }
     try {
       await registerTool($)
     } catch {
       // The tool survives /clear anyway; registering again is only a safeguard.
     }
-
-    const verdict = guard(mine.mode, mine.gen, pickLimits(after.rateLimits, s.rate, await $.clock.now()))
 
     if (mine.turnBeforeClear) {
       const text = startText(mine, { auto: false, blocked: MSG.overwrittenBlock }, mine.overwritten)
@@ -251,7 +257,10 @@ export const register: Register = on => {
       s.prompts = 0
       s.turnId = e.turnId
     }
-    return yield* next(e)
+    const r = yield* next(e)
+    // A model response since startedAt changed means usage() now reads the new conversation.
+    if (e.agentId === undefined && s.rec?.phase !== 'committed') s.quiet = false
+    return r
   })
 
   on('turn.start', async ($, e, next) => {
