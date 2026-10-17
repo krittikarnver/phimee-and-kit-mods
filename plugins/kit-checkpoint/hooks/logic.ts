@@ -38,7 +38,7 @@ export const formatK = (tokens: number): string =>
   tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(1)}M` : `${Math.round(tokens / 1000)}k`
 
 export const MSG = {
-  soft: 'ทำชิ้นปัจจุบันต่อได้ ประเมินว่างานชิ้นถัดไปจะทำทันก่อน 500K ไหม ถ้าไม่ทันให้หยุดที่ checkpoint ถัดไป (จุดที่ถ้าหยุดแล้วเริ่มใหม่ งานไม่พัง) แล้วเรียก tool handoff',
+  soft: `ทำชิ้นปัจจุบันต่อได้ ประเมินว่างานชิ้นถัดไปจะทำทันก่อน ${formatK(HARD)} ไหม ถ้าไม่ทันให้หยุดที่ checkpoint ถัดไป (จุดที่ถ้าหยุดแล้วเริ่มใหม่ งานไม่พัง) แล้วเรียก tool handoff`,
   hard: 'หยุดทันทีที่หยุดได้อย่างปลอดภัย ถ้ากำลังแก้ไฟล์อยู่ให้ทำให้เสร็จจนอยู่ในสภาพที่ใช้ได้ก่อน แล้วเรียก tool handoff',
   notYet: 'context ยังไม่ถึง 400K ไม่ต้อง handoff',
   fromSubagent: 'เรียก handoff ได้จาก session หลักเท่านั้น',
@@ -50,7 +50,8 @@ export const MSG = {
   agentsBusy: 'รอให้ subagent ทำเสร็จก่อน แล้วค่อยเรียก handoff ใหม่',
   saveFailed: 'บันทึก handoff ไม่ได้ ใส่ handoff เต็ม ๆ ลงในแชทแล้วหยุด',
   saved: (p: string) => `บันทึก handoff ไว้ที่ ${p} แล้ว จะ clear ทันทีที่จบ turn นี้ จบ turn เลย ห้ามเรียก tool อื่นอีก`,
-  stale: (p: string) => `[kit-checkpoint] handoff ที่ ${p} เก่าแล้ว ยกเลิก clear อัตโนมัติ ถ้ายังต้องการให้เรียก handoff ใหม่`,
+  stale: (p: string) =>
+    `[kit-checkpoint] handoff ที่ ${p} เก่าแล้ว ยกเลิก clear อัตโนมัติ ทำตามที่ผู้ใช้สั่งก่อน แล้วถ้ายังได้คำเตือน context อยู่ ให้เรียก handoff ใหม่ที่ checkpoint ถัดไป`,
   committed: (c: string) => `[kit-checkpoint] มีข้อความเข้ามาก่อน handoff อย่าทำต่อเอง ถามผู้ใช้ก่อน\n\n${c}`,
   bgNote: 'ถ้ามี notification จาก task ที่เริ่มไว้ก่อน clear (เช่น Workflow, Bash background) เข้ามา ให้รายงานผู้ใช้ อย่าลงมือทำตาม',
   goOn: 'ตรวจสภาพจริงก่อน (git status, test ที่เกี่ยวข้อง) แล้วทำต่อจาก "ขั้นต่อไป"',
@@ -77,7 +78,7 @@ export const burn = (history: readonly number[]): Burn | null => {
 
 export const warnText = (level: Level, tokens: number, b: Burn | null): string => {
   const burnPart = b ? `โต ${formatK(b.grew)} ใน ${b.calls} tool call ล่าสุด` : 'ยังไม่มี burn rate'
-  return `[kit-checkpoint] context ${formatK(tokens)} · เหลือ ${formatK(Math.max(0, HARD - tokens))} ก่อนถึง 500k · ${burnPart} · ${MSG[level]}`
+  return `[kit-checkpoint] context ${formatK(tokens)} · เหลือ ${formatK(Math.max(0, HARD - tokens))} ก่อนถึง ${formatK(HARD)} · ${burnPart} · ${MSG[level]}`
 }
 
 /** Why the handoff tool must refuse, checked in spec order; null when it may proceed. */

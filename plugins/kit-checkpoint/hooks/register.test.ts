@@ -13,7 +13,7 @@ function world(on: On) {
     tokens: 450_000 as number | undefined, sid: 'sid-1', startedAt: 1,
     rate: [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 10 }],
     agents: [] as { id: string; status: AgentStatus }[],
-    files: new Map<string, string>(), commands: [] as string[], submits: [] as string[], notes: [] as string[], specs: [] as unknown[],
+    files: new Map<string, string>(), commands: [] as string[], submits: [] as string[], notes: [] as string[], toasts: [] as string[], specs: [] as unknown[],
     toolsRan: [] as string[], git: true, clear: 'works' as 'works' | 'noop' | 'reject', submit: 'ok' as 'ok' | 'drop',
     holdWrite: 0, holdClear: 0, holdList: 0, usageThrows: false, notifyThrows: false, writeThrows: false,
   }
@@ -43,6 +43,7 @@ function world(on: On) {
     if (w.clear === 'works') { w.sid += '+'; w.startedAt += 1; w.tokens = 20_000 }
     return {}
   })
+  on('ui.toast', async (_$, e) => { w.toasts.push(e.text); return { value: undefined } })
   on('ui.notify', async (_$, e) => {
     w.notes.push(e.text)
     if (w.notifyThrows) throw new Error('notify')
@@ -444,4 +445,12 @@ test('startedAt change at high context lifts quiet after the next model response
   await step($, 'T1')
   w.tokens = 520_000
   expect(ctx(await bash($))).toContain(MSG.hard)
+})
+
+test('every notify also shows a toast, even when notify fails', async ($, on) => {
+  const { w, clock } = world(on)
+  w.notifyThrows = true
+  await cycle($, w, clock, 'T1')
+  expect(w.toasts.some(t => t.includes(P1))).toBe(true)
+  expect(w.toasts.some(t => t.startsWith('clear แล้ว'))).toBe(true)
 })
