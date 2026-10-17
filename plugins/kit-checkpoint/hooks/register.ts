@@ -1,11 +1,27 @@
-import { atom } from 'claude-code'
-import type { EngineInterface, Register, SessionUsage } from 'claude-code'
+import { atom, read } from 'claude-code'
+import type { EngineInterface, Next, Register, SessionUsage, ToolCallInput, ToolCallResult } from 'claude-code'
 
-import { BURN_CALLS, MSG, SOFT, TOOL, burn, warnLevel, warnText } from './logic'
-import type { Rate } from './logic'
+import { BURN_CALLS, BUSY, MSG, SOFT, TOOL, TOOL_NAME, burn, handoffDoc, handoffPath, refusal, warnLevel, warnText } from './logic'
+import type { Mode, Rate } from './logic'
 
 // The generation of the current conversation; kept in $.state so it outlives a reload.
 const gen = atom({ plugin: 'kit-checkpoint', key: 'gen' } as const, 0)
+
+/** One handoff on its way to a clear; compared by identity, so a stale finalize never touches a newer one. */
+type Rec = {
+  phase: 'pending' | 'committed'
+  path: string
+  content: string
+  gen: number
+  mode: Mode
+  reason: string
+  turnId: string | undefined
+  userHasHandoff: boolean
+  userRepliedAfterCommit: boolean
+  turnBeforeClear: boolean
+  overwritten: string[]
+  cleared: boolean
+}
 
 const fresh = () => ({
   lastWarned: null as number | null,
@@ -14,10 +30,64 @@ const fresh = () => ({
   startedAt: null as number | null,
   // No warnings (and no handoff) until a reading below 400K: the figures may still be the old conversation's.
   quiet: false,
+  rec: null as Rec | null,
+  // Main-session tool calls and prompts since the last model request, and that request's turn.
+  tools: 0,
+  prompts: 0,
+  turnId: undefined as string | undefined,
+  aborted: new Set<string>(),
+  // A stale-handoff line waiting for the next result or prompt to carry it.
+  note: null as string | null,
 })
 
 // Module state; register() starts it over, as a reload starts the module's variables over.
 let s = fresh()
+
+const TOOL_SPEC = {
+  name: TOOL_NAME,
+  isDeferred: false,
+  description:
+    'บันทึก handoff ลง .git แล้ว /clear บทสนทนานี้ตอนจบ turn และส่ง handoff เป็นข้อความแรกของบทสนทนาใหม่ ' +
+    'เรียกเฉพาะหลังได้คำเตือน [kit-checkpoint] เท่านั้น ต้องเป็น tool call เดียวของข้อความนั้น และเรียกแล้วให้จบ turn ทันที ' +
+    'content ต้องมีหัวข้อ: เป้าหมาย / ทำเสร็จแล้ว / ค้างอยู่ตรงไหน / ตัดสินใจอะไรไปแล้วและเพราะอะไร / ไฟล์ที่เกี่ยวข้อง / ขั้นต่อไป',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      content: { type: 'string', description: 'handoff ทั้งก้อน เป็น markdown' },
+      mode: {
+        type: 'string',
+        enum: ['auto', 'wait'],
+        description: 'auto = ขั้นต่อไปชัดอยู่ใน plan แล้ว ไปต่อเองได้ · wait = ต้องให้ผู้ใช้ตัดสินใจ',
+      },
+      reason: { type: 'string', description: 'บรรทัดเดียว ทำไมหยุด หรือทำไมต้องรอ' },
+    },
+    required: ['content', 'mode', 'reason'],
+  },
+}
+
+function notify($: EngineInterface, text: string): Promise<unknown> {
+  return $.ui.notify(text, { title: 'kit-checkpoint' }).catch(() => {})
+}
+
+async function registerTool($: EngineInterface): Promise<void> {
+  await $.tool.register(TOOL_SPEC)
+}
+
+/** Something happened after the handoff was written: a pending one is stale, so no clear. */
+function cancel($: EngineInterface): void {
+  if (s.rec?.phase !== 'pending') return
+  const { path } = s.rec
+  s.rec = null
+  s.note = MSG.stale(path)
+  void notify($, `ยกเลิก clear อัตโนมัติ มีกิจกรรมใหม่หลังเขียน handoff (${path})`)
+}
+
+/** Takes the waiting stale line, if any, for whatever reaches the model next. */
+function takeNote(): string[] {
+  const note = s.note
+  s.note = null
+  return note ? [note] : []
+}
 
 async function observe($: EngineInterface): Promise<SessionUsage> {
   const u = await $.session.usage()
@@ -42,12 +112,105 @@ function warningFor(tokens: number | undefined): string | null {
   return level && warnText(level, tokens, burn(s.history))
 }
 
+async function handoffCall($: EngineInterface, e: ToolCallInput, next: Next<'tool.call'>): Promise<ToolCallResult> {
+  const turnId = s.turnId
+  const input = e as { content?: unknown; mode?: unknown; reason?: unknown }
+
+  const tokens = await observe($).then(u => u.context.tokens, () => undefined)
+  const busyAgents = await $.agent.list().then(
+    list => list.filter(a => BUSY.includes(a.status)).length,
+    () => 1,
+  )
+  const no = refusal({
+    agentId: e.agentId,
+    content: input.content,
+    tokens,
+    quiet: s.quiet,
+    phase: s.rec?.phase ?? 'none',
+    tools: s.tools,
+    prompts: s.prompts,
+    busyAgents,
+  })
+  if (no) return { result: no }
+
+  const content = input.content as string
+  const mode: Mode = input.mode === 'auto' ? 'auto' : 'wait'
+  const reason = typeof input.reason === 'string' ? input.reason : ''
+  const g = (await read($, gen)) + 1
+
+  let path: string
+  try {
+    const git = await $.process.run(['git', 'rev-parse', '--absolute-git-dir'])
+    if (git.exitCode !== 0) return { result: MSG.saveFailed }
+    const dir = git.stdout.trim()
+    const now = await $.clock.now()
+    let n = 1
+    while (await $.fs.exists(handoffPath(dir, now, g, n))) n++
+    path = handoffPath(dir, now, g, n)
+    await $.fs.write(path, handoffDoc({ gen: g, mode, reason, now, content }))
+  } catch {
+    return { result: MSG.saveFailed }
+  }
+
+  // Re-check with no await in between: anything that arrived while git ran or the file was written wins.
+  if (s.prompts > 0) return { result: MSG.promptArrived }
+  if (s.tools > 0) return { result: MSG.siblings }
+  if (s.rec !== null) return { result: MSG.already }
+  if (next.signal.aborted || (turnId !== undefined && s.aborted.has(turnId))) return { result: MSG.promptArrived }
+
+  s.rec = {
+    phase: 'pending', path, content, gen: g, mode, reason, turnId,
+    userHasHandoff: false, userRepliedAfterCommit: false, turnBeforeClear: false, overwritten: [], cleared: false,
+  }
+  s.note = null
+  void notify($, `บันทึก handoff ไว้ที่ ${path} จะ clear เมื่อจบ turn นี้`)
+  return { result: MSG.saved(path) }
+}
+
 export const register: Register = on => {
   s = fresh()
 
+  on('session.start', async ($, e, next) => {
+    await registerTool($)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined) {
+      s.tools = 0
+      s.prompts = 0
+      s.turnId = e.turnId
+    }
+    return yield* next(e)
+  })
+
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined && s.rec && s.rec.turnId !== e.turnId) cancel($)
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined && e.isAborted) {
+      s.aborted.add(e.turnId)
+      cancel($)
+    }
+    return next(e)
+  })
+
+  on('session.append', async ($, e, next) => {
+    if (e.agentId === undefined && e.door === 'delivery') {
+      s.prompts++
+      cancel($)
+    }
+    return next(e)
+  })
+
   on('tool.call', async ($, e, next) => {
-    if (e.tool === TOOL) return next(e)
+    if (e.tool === TOOL) return handoffCall($, e, next)
     if (e.agentId !== undefined) return next(e)
+
+    s.tools++
+    cancel($)
 
     const r = await next(e)
     if (r.deny !== undefined) return r
@@ -55,20 +218,25 @@ export const register: Register = on => {
     const tokens = (await observe($)).context.tokens
     if (tokens !== undefined) s.history = [...s.history, tokens].slice(-(BURN_CALLS + 1))
     const warning = warningFor(tokens)
-    if (!warning || tokens === undefined) return r
+    const lines = [...takeNote(), ...(warning ? [warning] : [])]
+    if (lines.length === 0) return r
 
-    s.lastWarned = tokens
-    return { ...r, context: [...(r.context ?? []), warning] }
+    if (warning) s.lastWarned = tokens ?? null
+    return { ...r, context: [...(r.context ?? []), ...lines] }
   }).catch(($, e, next) => (e.tool === TOOL ? { result: MSG.saveFailed } : next(e)))
 
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'plugin' && e.origin.name === $.plugin.name) return next(e)
 
+    s.prompts++
+    cancel($)
+
     const tokens = (await observe($)).context.tokens
     const warning = warningFor(tokens)
-    if (!warning || tokens === undefined) return next(e)
+    const lines = [...takeNote(), ...(warning ? [warning] : [])]
+    if (lines.length === 0) return next(e)
 
-    s.lastWarned = tokens
-    return next({ ...e, context: [...(e.context ?? []), warning] })
+    if (warning) s.lastWarned = tokens ?? null
+    return next({ ...e, context: [...(e.context ?? []), ...lines] })
   }).catch(($, e, next) => next(e))
 }

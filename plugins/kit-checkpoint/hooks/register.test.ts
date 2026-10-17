@@ -12,13 +12,13 @@ function world(on: On) {
     tokens: 450_000 as number | undefined, sid: 'sid-1', startedAt: 1,
     rate: [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 10 }],
     agents: [] as { id: string; status: string }[],
-    files: new Map<string, string>(), commands: [] as string[], submits: [] as string[], notes: [] as string[],
+    files: new Map<string, string>(), commands: [] as string[], submits: [] as string[], notes: [] as string[], specs: [] as unknown[],
     toolsRan: [] as string[], git: true, clear: 'works' as 'works' | 'noop' | 'reject', submit: 'ok' as 'ok' | 'drop',
     holdWrite: 0, holdClear: 0, holdList: 0, usageThrows: false, notifyThrows: false, writeThrows: false,
   }
   const clock = mock.clock(on, { now: T0 })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
-  on('tool.register', async () => ({ value: {} }))
+  on('tool.register', async (_$, e) => { w.specs.push(e); return { value: {} } })
   on('session.usage', async () => {
     if (w.usageThrows) throw new Error('usage')
     return { value: { startedAt: w.startedAt, context: { tokens: w.tokens, window: 1_000_000 }, rateLimits: w.rate } }
@@ -109,4 +109,121 @@ test('usage failure keeps the tool result and runs the tool once', async ($, on)
   w.usageThrows = true
   expect((await bash($)).result).toBe('ran Bash')
   expect(w.toolsRan).toEqual(['Bash'])
+})
+
+const P1 = '/repo/.git/kit-handoff/20261017-190000-g1.md'
+
+test('registers the tool up front', async ($, on) => {
+  const { w } = world(on)
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
+  expect(w.specs).toEqual([expect.objectContaining({ name: 'handoff', isDeferred: false })])
+})
+
+test('saves the file and answers', async ($, on) => {
+  const { w, clock } = world(on)
+  await step($, 'T1')
+  const r = await handoff($)
+  expect(r.result).toBe(MSG.saved(P1))
+  expect(r.context).toBeUndefined() // ไม่แนบคำเตือนกับผลของ handoff
+  expect(w.files.get(P1)).toContain('generation: 1\nmode: auto\nreason: "ทดสอบ"')
+  await clock.settle() // notify ยิงแบบไม่ await
+  expect(w.notes.some(n => n.includes(P1))).toBe(true)
+})
+
+test('never overwrites an existing file', async ($, on) => {
+  const { w } = world(on)
+  w.files.set(P1, 'old')
+  await step($, 'T1')
+  expect((await handoff($)).result).toBe(MSG.saved(P1.replace('.md', '-2.md')))
+  expect(w.files.get(P1)).toBe('old')
+})
+
+test('refusals write nothing', async ($, on) => {
+  const { w } = world(on)
+  await step($, 'T1')
+  w.tokens = 300_000; expect((await handoff($)).result).toBe(MSG.notYet)
+  w.tokens = 450_000
+  expect((await $.tool.call({ tool: TOOL, content: 'x', mode: 'auto', reason: '', agentId: 'a1' })).result).toBe(MSG.fromSubagent)
+  w.agents = [{ id: 'a1', status: 'running' }]; expect((await handoff($)).result).toBe(MSG.agentsBusy)
+  w.agents = []
+  await bash($); expect((await handoff($)).result).toBe(MSG.siblings) // sibling ก่อน handoff ใน request เดียวกัน
+  expect(w.files.size).toBe(0)
+})
+
+test('a prompt in the same request refuses', async ($, on) => {
+  world(on)
+  await step($, 'T1')
+  await user($, 'เดี๋ยวก่อน')
+  expect((await handoff($)).result).toBe(MSG.promptArrived)
+})
+
+test('a prompt while the file is being written refuses and keeps the file', async ($, on) => {
+  const { w, clock } = world(on)
+  await step($, 'T1')
+  w.holdWrite = 10
+  const call = handoff($)
+  await clock.settle()
+  await user($, 'เดี๋ยวก่อน')
+  await clock.advance(10)
+  expect((await call).result).toBe(MSG.promptArrived)
+  expect(w.files.has(P1)).toBe(true)
+})
+
+test('second call while pending', async ($, on) => {
+  world(on)
+  await step($, 'T1'); await handoff($)
+  await step($, 'T1'); expect((await handoff($)).result).toBe(MSG.already)
+})
+
+test('not a git repo, or the write fails: answer and never clear', async ($, on) => {
+  const { w, clock } = world(on)
+  w.git = false
+  await step($, 'T1')
+  expect((await handoff($)).result).toBe(MSG.saveFailed)
+  w.git = true; w.writeThrows = true
+  await step($, 'T1')
+  expect((await handoff($)).result).toBe(MSG.saveFailed)
+  await done($, 'T1'); await clock.settle()
+  expect(w.commands).toEqual([])
+})
+
+test('a sibling that starts while the file is being written refuses', async ($, on) => {
+  const { w, clock } = world(on)
+  await step($, 'T1')
+  w.holdWrite = 10
+  const call = handoff($)
+  await clock.settle()
+  await bash($) // เช่น Agent ที่เริ่มระหว่างเขียนไฟล์ ตอนนั้นยังไม่มี record ให้ cancel
+  await clock.advance(10)
+  expect((await call).result).toBe(MSG.siblings)
+})
+
+test('own plugin prompts never cancel', async ($, on) => {
+  world(on)
+  await step($, 'T1'); await handoff($)
+  await $.prompt.submit({ text: 'x', origin: { kind: 'plugin', name: 'kit-checkpoint' }, wait: false })
+  expect((await handoff($)).result).toBe(MSG.already) // record ยัง pending อยู่
+})
+
+test('handoff with usage failure refuses', async ($, on) => {
+  const { w } = world(on)
+  w.usageThrows = true
+  await step($, 'T1')
+  expect((await handoff($)).result).toBe(MSG.notYet)
+})
+
+test('refuses right after a user clear', async ($, on) => {
+  const { w } = world(on)
+  await bash($)
+  w.startedAt = 2 // ผู้ใช้พิมพ์ /clear เอง ตัวเลขยังเป็นของเก่า
+  await step($, 'T1')
+  expect((await handoff($)).result).toBe(MSG.justCleared)
+})
+
+test('activity after the handoff marks it stale', async ($, on) => {
+  const { w } = world(on)
+  await step($, 'T1'); await handoff($)
+  expect(ctx(await bash($))).toContain(MSG.stale(P1)) // sibling ที่รันหลัง handoff
+  await step($, 'T2'); await handoff($) // P1 มีอยู่แล้ว ได้ชื่อ -2
+  expect(ctx(await user($, 'แก้ตรงนี้'))).toContain(MSG.stale(P1.replace('.md', '-2.md')))
 })
