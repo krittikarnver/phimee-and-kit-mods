@@ -52,9 +52,10 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 
 - `/kit-update:check` dry-run ดูก่อนว่าจะไล่เช็คตัวไหนบ้าง ไม่แตะอะไร (ยังบอกไม่ได้ว่าตัวไหนมี version ใหม่ ต้องรัน `/kit-update:all` ถึงจะรู้)
 - `/kit-update:all` refresh marketplace ทั้งหมด → อัปเดตทุก install ตาม scope ของมัน → สรุปว่าตัวไหนเปลี่ยนจาก version ไหนเป็นอะไร (diff จาก `plugin list --json` ก่อน-หลัง ไม่ได้เชื่อแค่ว่าคำสั่งตอบ ok)
+- `/kit-update:check-all-projects` และ `/kit-update:all-projects` ทำเหมือนกัน แต่รวม install ระดับ project/local ของ project อื่นด้วย (สองตัวแรกทำเฉพาะของ project ปัจจุบัน)
 - เสร็จแล้วพิมพ์ `/reload-plugins` เอง Claude สั่งแทนไม่ได้
-- ส่ง flag ต่อท้ายได้: `--only '<regex>'`, `--scope user,project`, `--all-projects`, `--no-marketplaces`
-- install ระดับ project/local อัปเดตเฉพาะของ project ปัจจุบัน ของ project อื่นต้องใส่ `--all-projects`
+- command ทั้งสี่ไม่รับ argument ข้อความที่พิมพ์ต่อท้ายไม่ถูกใส่ลงในคำสั่ง shell และ Claude ถูกสั่งให้ไม่ทำตาม ถ้าต้องใช้ flag อื่น (`--only '<regex>'`, `--scope user,project`, `--no-marketplaces`, `-y`) ให้รัน script ตรงจาก terminal
+- install ของ project ที่ไม่มีโฟลเดอร์แล้วจะถูกข้ามพร้อมบอกเหตุผล
 - ข้าม plugin ที่ไม่ได้มาจาก marketplace (`@synced`, `@inline`, `@skills-dir`) แล้วบอกรายชื่อไว้ท้ายสรุป
   - `@synced` คือ plugin ที่ sync มาจาก claude.ai (เช่นใน cloud session) ตัวพวกนี้อัปเดตผ่าน claude.ai ไม่ใช่ที่นี่
   - ถ้าใช้ kit-scrutinize แบบ sync ต้อง sync `9arm-skills` ไปด้วย ไม่งั้น kit-scrutinize จะถูกปิดเพราะหา dependency ไม่เจอ

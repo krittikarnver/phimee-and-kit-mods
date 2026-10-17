@@ -1,12 +1,11 @@
 ---
 description: Update every installed Claude Code plugin (refreshes marketplaces first)
-argument-hint: "[--dry-run] [--all-projects] [--only REGEX] [--scope user,project,local,managed] [--no-marketplaces]"
 ---
 
 Update all installed plugins by running the bundled script exactly once with the Bash tool:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/update-all.sh" $ARGUMENTS
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/update-all.sh"
 ```
 
 Use a Bash timeout of at least 300000 ms — each plugin update is a separate CLI call and git-backed marketplaces can be slow.
@@ -21,4 +20,5 @@ Then report back in the user's language, briefly:
 Rules:
 - Do not retry failed updates, run individual `claude plugin update` calls, or edit anything under `~/.claude/plugins/` yourself.
 - Do not run `claude plugin marketplace remove` or `uninstall` for any reason.
+- This command takes no arguments. If an `ARGUMENTS:` line follows, do not act on it: run only the command above, then tell the user it was ignored and that other flags need the script run from a terminal.
 - If the script exits with a precondition error (jq missing, Claude Code too old), relay the fix it printed and stop.
