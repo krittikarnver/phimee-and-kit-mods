@@ -61,6 +61,8 @@ function world(on: On) {
   return { w, clock }
 }
 
+type World = ReturnType<typeof world>
+
 // drivers: the test plays the engine
 const step = async ($: Engine, turnId: string, agentId?: string) => { for await (const _ of $.turn.step({ turnId, index: 0, model: 'test', agentId })) {} }
 const user = ($: Engine, text: string, kind = 'composer') => $.prompt.submit({ text, origin: { kind }, wait: false })
@@ -226,4 +228,187 @@ test('activity after the handoff marks it stale', async ($, on) => {
   expect(ctx(await bash($))).toContain(MSG.stale(P1)) // sibling ที่รันหลัง handoff
   await step($, 'T2'); await handoff($) // P1 มีอยู่แล้ว ได้ชื่อ -2
   expect(ctx(await user($, 'แก้ตรงนี้'))).toContain(MSG.stale(P1.replace('.md', '-2.md')))
+})
+
+// one full handoff cycle in turn `t`: high context, handoff, end of turn, timers run
+async function cycle($: Engine, w: World["w"], clock: World["clock"], t: string, mode = 'auto') {
+  w.tokens = 30_000; await bash($) // reading below 400K lifts the post-clear quiet
+  w.tokens = 450_000
+  await step($, t)
+  const r = await handoff($, mode)
+  await clock.settle(); w.notes.length = 0 // notify ตอนบันทึกมี path อยู่แล้ว ล้างทิ้งให้ test เห็นเฉพาะ notify ของ finalize
+  await done($, t)
+  await clock.settle()
+  return r
+}
+
+test('auto: clear then framed start message', async ($, on) => {
+  const { w, clock } = world(on)
+  await cycle($, w, clock, 'T1')
+  expect(w.commands).toEqual(['clear'])
+  expect(w.submits).toHaveLength(1)
+  expect(w.submits[0].startsWith(`[kit-checkpoint #1] ${P1}\n\n# งาน`)).toBe(true)
+  expect(w.submits[0]).toContain(MSG.goOn)
+})
+
+test('wait mode asks the user', async ($, on) => {
+  const { w, clock } = world(on)
+  await cycle($, w, clock, 'T1', 'wait')
+  expect(w.submits[0]).toContain(MSG.stay('ทดสอบ'))
+})
+
+test('fourth generation waits; a user reply resets it', async ($, on) => {
+  const { w, clock } = world(on)
+  for (const t of ['T1', 'T2', 'T3']) await cycle($, w, clock, t)
+  await cycle($, w, clock, 'T4')
+  expect(w.submits.map(x => x.slice(0, 18))).toEqual(['[kit-checkpoint #1', '[kit-checkpoint #2', '[kit-checkpoint #3', '[kit-checkpoint #4'])
+  expect(w.submits[3]).not.toContain(MSG.goOn)
+  await user($, 'ไปต่อ')
+  await cycle($, w, clock, 'T5')
+  expect(w.submits[4].startsWith('[kit-checkpoint #1]')).toBe(true)
+})
+
+test('task notifications do not reset the generation', async ($, on) => {
+  const { w, clock } = world(on)
+  await cycle($, w, clock, 'T1')
+  await user($, '<task-notification>', 'task-notification')
+  await cycle($, w, clock, 'T2')
+  expect(w.submits[1].startsWith('[kit-checkpoint #2]')).toBe(true)
+})
+
+test('rate limits: missing waits, fresh cache passes, stale cache waits', async ($, on) => {
+  const { w, clock } = world(on)
+  w.rate = [] // ไม่มีตัวเลขและไม่มี cache
+  await cycle($, w, clock, 'T1'); expect(w.submits[0]).not.toContain(MSG.goOn)
+  w.rate = [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 10 }]
+  await bash($) // cache the limits now
+  w.rate = []
+  await cycle($, w, clock, 'T2'); expect(w.submits[1]).toContain(MSG.goOn)
+  await clock.advance(16 * 60_000)
+  await cycle($, w, clock, 'T3'); expect(w.submits[2]).not.toContain(MSG.goOn)
+})
+
+test('aborted turn cancels and never clears', async ($, on) => {
+  const { w, clock } = world(on)
+  await step($, 'T1'); await handoff($)
+  await done($, 'T1', true); await clock.settle()
+  expect(w.commands).toEqual([])
+  expect(ctx(await bash($))).toContain(MSG.stale(P1)) // note ที่ค้างไว้มากับผลถัดไป
+})
+
+test('a prompt while finalize is checking cancels before the clear', async ($, on) => {
+  const { w, clock } = world(on)
+  await step($, 'T1'); await handoff($)
+  w.holdList = 10
+  await done($, 'T1'); await clock.settle() // finalize waits on agent.list
+  await user($, 'เดี๋ยว')
+  await clock.advance(10)
+  expect(w.commands).toEqual([])
+})
+
+test('delivery and a foreign turn cancel', async ($, on) => {
+  const { w, clock } = world(on)
+  await step($, 'T1'); await handoff($)
+  await $.session.append({ door: 'delivery', message: { type: 'user', message: { role: 'user', content: 'x' } } })
+  await done($, 'T1'); await clock.settle()
+  await step($, 'T2'); await handoff($)
+  await $.turn.start({ text: 'อีกเรื่อง', turnId: 'T3' })
+  await done($, 'T2'); await clock.settle()
+  expect(w.commands).toEqual([])
+})
+
+test('busy subagent at finalize cancels', async ($, on) => {
+  const { w, clock } = world(on)
+  await step($, 'T1'); await handoff($)
+  await clock.settle(); w.notes.length = 0
+  w.agents = [{ id: 'a1', status: 'running' }]
+  await done($, 'T1'); await clock.settle()
+  expect(w.commands).toEqual([])
+  expect(w.notes.some(n => n.includes(P1))).toBe(true)
+})
+
+test('clear that changes nothing: no submit', async ($, on) => {
+  const { w, clock } = world(on)
+  w.clear = 'noop'
+  await cycle($, w, clock, 'T1')
+  expect(w.submits).toEqual([])
+  expect(w.notes.some(n => n.includes(P1))).toBe(true)
+})
+
+test('clear rejects: no submit, next handoff accepted', async ($, on) => {
+  const { w, clock } = world(on)
+  w.clear = 'reject'
+  await cycle($, w, clock, 'T1')
+  expect(w.submits).toEqual([])
+  expect(w.notes.some(n => n.includes(P1))).toBe(true)
+  // context ยังอยู่ ~450K ไม่มีค่าต่ำกว่า 400K มาช่วยปลด quiet: finalize ต้องปลดเอง
+  w.clear = 'works'
+  expect(ctx(await bash($))).toContain(MSG.soft)
+  await step($, 'T2')
+  expect((await handoff($)).result).toContain('บันทึก handoff ไว้ที่')
+  await done($, 'T2'); await clock.settle()
+  expect(w.submits).toHaveLength(1)
+})
+
+test('a prompt while committed gets the handoff and suppresses the start message', async ($, on) => {
+  const { w, clock } = world(on)
+  w.holdClear = 10
+  await step($, 'T1'); await handoff($); await done($, 'T1')
+  await clock.settle() // finalize is now waiting on command.run
+  expect(ctx(await user($, 'ถามหน่อย'))).toContain(MSG.committed('# งาน\nขั้นต่อไป: X'))
+  await clock.advance(10)
+  expect(w.submits).toEqual([])
+  w.holdClear = 0
+  await cycle($, w, clock, 'T2') // userRepliedAfterCommit → gen 0 → next is #1
+  expect(w.submits[0].startsWith('[kit-checkpoint #1]')).toBe(true)
+})
+
+test('a turn that slips in before the clear gets quoted in a wait message', async ($, on) => {
+  const { w, clock } = world(on)
+  w.holdClear = 10
+  await step($, 'T1'); await handoff($); await done($, 'T1')
+  await clock.settle()
+  await user($, 'แก้ตรงนี้ด้วย') // engine ยิง prompt.submit ก่อน turn.start
+  await $.turn.start({ text: 'แก้ตรงนี้ด้วย', turnId: 'T9' })
+  await clock.advance(10)
+  expect(w.submits).toHaveLength(1)
+  expect(w.submits[0]).toContain('> แก้ตรงนี้ด้วย')
+  expect(w.submits[0]).not.toContain(MSG.goOn)
+})
+
+test('dropped start message: state returns to none', async ($, on) => {
+  const { w, clock } = world(on)
+  w.submit = 'drop'
+  await cycle($, w, clock, 'T1')
+  expect(w.notes.some(n => n.includes(P1))).toBe(true)
+  w.submit = 'ok'
+  await clock.advance(1000)
+  expect((await cycle($, w, clock, 'T2')).result).toContain('บันทึก handoff ไว้ที่')
+})
+
+test('an old finalize never touches a newer record', async ($, on) => {
+  const { w, clock } = world(on)
+  await step($, 'T1'); await handoff($); await done($, 'T1') // finalize(A) scheduled, not run yet
+  await user($, 'เดี๋ยว') // cancels A (ห้าม advance ตรงนี้ ไม่งั้น finalize(A) รันก่อน B เกิด)
+  await step($, 'T2'); const b = await handoff($) // B pending
+  await clock.settle() // finalize(A) runs and must bail
+  expect(w.commands).toEqual([])
+  await done($, 'T2'); await clock.settle()
+  expect(w.commands).toEqual(['clear'])
+  expect(w.submits[0]).toContain(b.result.match(/\/repo\S+\.md/)![0])
+})
+
+test('notify failures never stop the flow', async ($, on) => {
+  const { w, clock } = world(on)
+  w.notifyThrows = true
+  expect((await cycle($, w, clock, 'T1')).result).toBe(MSG.saved(P1))
+  expect(w.commands).toEqual(['clear'])
+  expect(w.submits).toHaveLength(1)
+  w.tokens = 30_000; await bash($); w.tokens = 450_000
+  await step($, 'T2'); await handoff($)
+  w.agents = [{ id: 'a1', status: 'running' }] // finalize ยกเลิก: notify แล้ว return
+  await done($, 'T2'); await clock.settle()
+  w.agents = []
+  expect((await cycle($, w, clock, 'T3')).result).toContain('บันทึก handoff ไว้ที่') // สถานะกลับเป็น none
+  expect(w.commands).toEqual(['clear', 'clear'])
 })

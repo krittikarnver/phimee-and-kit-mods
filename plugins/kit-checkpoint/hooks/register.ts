@@ -1,7 +1,10 @@
-import { atom, read } from 'claude-code'
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Next, Register, SessionUsage, ToolCallInput, ToolCallResult } from 'claude-code'
 
-import { BURN_CALLS, BUSY, MSG, SOFT, TOOL, TOOL_NAME, burn, handoffDoc, handoffPath, refusal, warnLevel, warnText } from './logic'
+import {
+  BURN_CALLS, BUSY, MSG, SOFT, TOOL, TOOL_NAME,
+  burn, guard, handoffDoc, handoffPath, pickLimits, refusal, resetsGen, startText, warnLevel, warnText,
+} from './logic'
 import type { Mode, Rate } from './logic'
 
 // The generation of the current conversation; kept in $.state so it outlives a reload.
@@ -74,12 +77,12 @@ async function registerTool($: EngineInterface): Promise<void> {
 }
 
 /** Something happened after the handoff was written: a pending one is stale, so no clear. */
-function cancel($: EngineInterface): void {
+function cancel($: EngineInterface, why = 'มีกิจกรรมใหม่หลังเขียน handoff'): void {
   if (s.rec?.phase !== 'pending') return
   const { path } = s.rec
   s.rec = null
   s.note = MSG.stale(path)
-  void notify($, `ยกเลิก clear อัตโนมัติ มีกิจกรรมใหม่หลังเขียน handoff (${path})`)
+  void notify($, `ยกเลิก clear อัตโนมัติ ${why} (${path})`)
 }
 
 /** Takes the waiting stale line, if any, for whatever reaches the model next. */
@@ -167,6 +170,73 @@ async function handoffCall($: EngineInterface, e: ToolCallInput, next: Next<'too
   return { result: MSG.saved(path) }
 }
 
+/** At the end of the handoff's turn: clear, then send the handoff as the new conversation's first message. */
+async function finalize($: EngineInterface, mine: Rec): Promise<void> {
+  let confirmed = false
+  try {
+    if (s.rec !== mine) return
+
+    const busy = await $.agent.list().then(list => list.some(a => BUSY.includes(a.status)), () => true)
+    if (s.rec !== mine) return
+    if (busy) return cancel($, 'subagent ยังทำงานอยู่')
+
+    const sid = await $.session.id()
+    const startedAt = (await $.session.usage()).startedAt
+    if (s.rec !== mine) return
+
+    // No await between committing and queueing the clear: nothing can slip in between.
+    mine.phase = 'committed'
+    s.quiet = true
+    const ran = await $.command.run({ command: 'clear' }).then(() => true, () => false)
+    mine.cleared = true
+
+    const after = await $.session.usage()
+    const sidAfter = await $.session.id()
+    if (!ran || (sidAfter === sid && after.startedAt === startedAt)) {
+      s.quiet = false
+      void notify($, `clear ไม่สำเร็จ บทสนทนาเดิมยังอยู่ handoff อยู่ที่ ${mine.path}`)
+      return
+    }
+    confirmed = true
+
+    await update($, gen, () => (mine.userRepliedAfterCommit ? 0 : mine.gen))
+    try {
+      await registerTool($)
+    } catch {
+      // The tool survives /clear anyway; registering again is only a safeguard.
+    }
+
+    const verdict = guard(mine.mode, mine.gen, pickLimits(after.rateLimits, s.rate, await $.clock.now()))
+
+    if (mine.turnBeforeClear) {
+      const text = startText(mine, { auto: false, blocked: MSG.overwrittenBlock }, mine.overwritten)
+      const sent = await $.prompt.submit({ text }).then(r => r.drop === undefined, () => false)
+      void notify($, sent
+        ? `clear แล้ว มีข้อความของผู้ใช้ถูก clear ทับ รอผู้ใช้ (${mine.path})`
+        : `clear แล้ว แต่ส่ง handoff ไม่ได้ ดูที่ ${mine.path}`)
+      return
+    }
+    if (mine.userHasHandoff) {
+      void notify($, `clear แล้ว handoff แนบไปกับข้อความของผู้ใช้ (${mine.path})`)
+      return
+    }
+
+    const sent = await $.prompt.submit({ text: startText(mine, verdict) }).then(r => r.drop === undefined, () => false)
+    if (!sent) {
+      void notify($, `clear แล้ว แต่ส่ง handoff ไม่ได้ ดูที่ ${mine.path}`)
+      return
+    }
+    void notify($, verdict.auto
+      ? `clear แล้ว ทำต่อเองจาก handoff #${mine.gen}`
+      : `clear แล้ว รอผู้ใช้: ${verdict.blocked ?? mine.reason}`)
+  } catch {
+    if (!confirmed) s.quiet = false
+    void notify($, `handoff มีปัญหา ดูไฟล์ที่ ${mine.path}`)
+  } finally {
+    if (s.rec === mine) s.rec = null
+  }
+}
+
 export const register: Register = on => {
   s = fresh()
 
@@ -185,7 +255,11 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined && s.rec && s.rec.turnId !== e.turnId) cancel($)
+    if (e.agentId === undefined && s.rec && s.rec.turnId !== e.turnId) {
+      // Someone else's turn got in before the clear ran: it will be cleared away, so quote it after.
+      if (s.rec.phase === 'committed' && !s.rec.cleared) s.rec.turnBeforeClear = true
+      cancel($)
+    }
     return next(e)
   })
 
@@ -193,6 +267,9 @@ export const register: Register = on => {
     if (e.agentId === undefined && e.isAborted) {
       s.aborted.add(e.turnId)
       cancel($)
+    } else if (e.agentId === undefined && s.rec?.phase === 'pending' && s.rec.turnId === e.turnId) {
+      const mine = s.rec
+      $.clock.after(0, () => void finalize($, mine))
     }
     return next(e)
   })
@@ -230,10 +307,18 @@ export const register: Register = on => {
 
     s.prompts++
     cancel($)
+    // Too late to cancel: the clear is under way, so this prompt carries the handoff instead.
+    const committed = s.rec?.phase === 'committed' ? s.rec : null
+    if (committed) {
+      committed.userHasHandoff = true
+      if (resetsGen(e.origin.kind)) committed.userRepliedAfterCommit = true
+      committed.overwritten.push(e.text)
+    }
 
-    const tokens = (await observe($)).context.tokens
+    if (resetsGen(e.origin.kind)) await update($, gen, () => 0)
+    const tokens = (await observe($).catch(() => null))?.context.tokens
     const warning = warningFor(tokens)
-    const lines = [...takeNote(), ...(warning ? [warning] : [])]
+    const lines = [...(committed ? [MSG.committed(committed.content)] : []), ...takeNote(), ...(warning ? [warning] : [])]
     if (lines.length === 0) return next(e)
 
     if (warning) s.lastWarned = tokens ?? null
