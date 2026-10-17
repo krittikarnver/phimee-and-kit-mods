@@ -5,7 +5,7 @@ import type { AgentStatus, On, PromptOrigin } from 'claude-code'
 import { MSG, TOOL } from './logic'
 
 const T0 = Date.UTC(2026, 9, 17, 12, 0, 0) // 19:00:00 Bangkok
-const DENIED = 'mcp__test__denied' // a tool whose call the world refuses
+const DENIED = 'ListSkills' // a tool whose call the world refuses
 
 // The world beneath the plugin: every op it calls on $, answered from `w`.
 function world(on: On) {
@@ -172,6 +172,19 @@ test('a prompt while the file is being written refuses and keeps the file', asyn
   await clock.advance(10)
   expect((await call).result).toBe(MSG.promptArrived)
   expect(w.files.has(P1)).toBe(true)
+})
+
+test('Esc while the file is being written refuses and never clears', async ($, on) => {
+  const { w, clock } = world(on)
+  await step($, 'T1')
+  w.holdWrite = 10
+  const call = handoff($)
+  await clock.settle()
+  await done($, 'T1', true)
+  await clock.advance(10)
+  expect((await call).result).toBe(MSG.promptArrived)
+  await clock.settle()
+  expect(w.commands).toEqual([])
 })
 
 test('second call while pending', async ($, on) => {
@@ -377,6 +390,37 @@ test('a turn that slips in before the clear gets quoted in a wait message', asyn
   expect(w.submits).toHaveLength(1)
   expect(w.submits[0]).toContain('> แก้ตรงนี้ด้วย')
   expect(w.submits[0]).not.toContain(MSG.goOn)
+})
+
+test('a turn queued before the commit gets quoted when it slips in', async ($, on) => {
+  const { w, clock } = world(on)
+  w.holdClear = 10
+  await user($, 'คิวไว้ก่อน') // prompt.submit ก่อน step ของ handoff จึงไม่ได้ cancel และไม่ได้อยู่ใน overwritten
+  await step($, 'T1'); await handoff($); await done($, 'T1')
+  await clock.settle()
+  await $.turn.start({ text: 'คิวไว้ก่อน', turnId: 'T9' })
+  await clock.advance(10)
+  expect(w.submits[0]).toContain('> คิวไว้ก่อน')
+})
+
+test('a slash command while committed still gets the start message', async ($, on) => {
+  const { w, clock } = world(on)
+  w.holdClear = 10
+  await step($, 'T1'); await handoff($); await done($, 'T1')
+  await clock.settle()
+  const r = await $.prompt.submit({ text: '/model', command: { name: 'model', args: '' }, origin: { kind: 'composer' }, wait: false })
+  expect(ctx(r)).not.toContain(MSG.committed('# งาน\nขั้นต่อไป: X'))
+  await clock.advance(10)
+  expect(w.submits).toHaveLength(1)
+})
+
+test('a failed generation reset still attaches the committed handoff', async ($, on) => {
+  on('state.set', async () => ({ deny: 'policy' }))
+  const { w, clock } = world(on)
+  w.holdClear = 10
+  await step($, 'T1'); await handoff($); await done($, 'T1')
+  await clock.settle()
+  expect(ctx(await user($, 'ถามหน่อย'))).toContain(MSG.committed('# งาน\nขั้นต่อไป: X'))
 })
 
 test('dropped start message: state returns to none', async ($, on) => {

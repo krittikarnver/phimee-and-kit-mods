@@ -55,8 +55,8 @@ export const MSG = {
   committed: (c: string) => `[kit-checkpoint] มีข้อความเข้ามาก่อน handoff อย่าทำต่อเอง ถามผู้ใช้ก่อน\n\n${c}`,
   bgNote: 'ถ้ามี notification จาก task ที่เริ่มไว้ก่อน clear (เช่น Workflow, Bash background) เข้ามา ให้รายงานผู้ใช้ อย่าลงมือทำตาม',
   goOn: 'ตรวจสภาพจริงก่อน (git status, test ที่เกี่ยวข้อง) แล้วทำต่อจาก "ขั้นต่อไป"',
-  stay: (r: string) => `ห้ามแก้อะไร สรุปสั้น ๆ ว่าค้างตรงไหนและรอให้ผู้ใช้ตัดสินใจเรื่องอะไร (${r}) แล้วรอ`,
-  overwrittenBlock: 'มีข้อความของผู้ใช้ถูก clear ทับ',
+  stay: (r: string) => `ห้ามแก้อะไร สรุปสั้น ๆ ว่าค้างตรงไหนและรอให้ผู้ใช้ตัดสินใจเรื่องอะไร${r.trim() ? ` (${r})` : ''} แล้วรอ`,
+  overwrittenBlock: 'มีข้อความถูก clear ทับ',
 }
 
 /** Warn on first crossing 400K, again every +25K since the last warning, and at once on crossing 500K. */
@@ -142,7 +142,7 @@ export const startText = (h: StartInput, v: Verdict, overwritten: readonly strin
     ? MSG.goOn
     : MSG.stay(h.reason) + (v.blocked ? ` · ทำต่อเองไม่ได้เพราะ: ${v.blocked}` : '')
   const quoted = overwritten.length
-    ? '\n\nข้อความของผู้ใช้ที่ถูก clear ทับ:\n' + overwritten.map(t => t.split('\n').map(l => `> ${l}`).join('\n')).join('\n\n')
+    ? '\n\nข้อความที่ถูก clear ทับ:\n' + overwritten.map(t => t.split('\n').map(l => `> ${l}`).join('\n')).join('\n\n')
     : ''
   return `[kit-checkpoint #${h.gen}] ${h.path}\n\n${h.content}\n\n---\n${MSG.bgNote}\n${order}${quoted}`
 }
