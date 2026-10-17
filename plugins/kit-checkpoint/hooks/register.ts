@@ -1,0 +1,336 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Next, Register, SessionUsage, ToolCallInput, ToolCallResult } from 'claude-code'
+
+import {
+  BURN_CALLS, BUSY, MSG, SOFT, TOOL, TOOL_NAME,
+  burn, guard, handoffDoc, handoffPath, pickLimits, refusal, resetsGen, startText, warnLevel, warnText,
+} from './logic'
+import type { Mode, Rate, Verdict } from './logic'
+
+// The generation of the current conversation; kept in $.state so it outlives a reload.
+const gen = atom({ plugin: 'kit-checkpoint', key: 'gen' } as const, 0)
+
+/** One handoff on its way to a clear; compared by identity, so a stale finalize never touches a newer one. */
+type Rec = {
+  phase: 'pending' | 'committed'
+  path: string
+  content: string
+  gen: number
+  mode: Mode
+  reason: string
+  turnId: string | undefined
+  userHasHandoff: boolean
+  userRepliedAfterCommit: boolean
+  turnBeforeClear: boolean
+  overwritten: string[]
+  cleared: boolean
+}
+
+const fresh = () => ({
+  lastWarned: null as number | null,
+  history: [] as number[],
+  rate: null as { limits: Rate[]; at: number } | null,
+  startedAt: null as number | null,
+  // No warnings (and no handoff) until a reading below 400K: the figures may still be the old conversation's.
+  quiet: false,
+  rec: null as Rec | null,
+  // Main-session tool calls and prompts since the last model request, and that request's turn.
+  tools: 0,
+  prompts: 0,
+  turnId: undefined as string | undefined,
+  aborted: new Set<string>(),
+  // A stale-handoff line waiting for the next result or prompt to carry it.
+  note: null as string | null,
+})
+
+// Module state; register() starts it over, as a reload starts the module's variables over.
+let s = fresh()
+
+const TOOL_SPEC = {
+  name: TOOL_NAME,
+  isDeferred: false,
+  description:
+    'บันทึก handoff ลง .git แล้ว /clear บทสนทนานี้ตอนจบ turn และส่ง handoff เป็นข้อความแรกของบทสนทนาใหม่ ' +
+    'เรียกเฉพาะหลังได้คำเตือน [kit-checkpoint] เท่านั้น ต้องเป็น tool call เดียวของข้อความนั้น และเรียกแล้วให้จบ turn ทันที ' +
+    'content ต้องมีหัวข้อ: เป้าหมาย / ทำเสร็จแล้ว / ค้างอยู่ตรงไหน / ตัดสินใจอะไรไปแล้วและเพราะอะไร / ไฟล์ที่เกี่ยวข้อง / ขั้นต่อไป',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      content: { type: 'string', description: 'handoff ทั้งก้อน เป็น markdown' },
+      mode: {
+        type: 'string',
+        enum: ['auto', 'wait'],
+        description: 'auto = ขั้นต่อไปชัดอยู่ใน plan แล้ว ไปต่อเองได้ · wait = ต้องให้ผู้ใช้ตัดสินใจ',
+      },
+      reason: { type: 'string', description: 'บรรทัดเดียว ทำไมหยุด หรือทำไมต้องรอ' },
+    },
+    required: ['content', 'mode', 'reason'],
+  },
+}
+
+function notify($: EngineInterface, text: string): Promise<unknown> {
+  return $.ui.notify(text, { title: 'kit-checkpoint' }).catch(() => {})
+}
+
+async function registerTool($: EngineInterface): Promise<void> {
+  await $.tool.register(TOOL_SPEC)
+}
+
+/** Something happened after the handoff was written: a pending one is stale, so no clear. */
+function cancel($: EngineInterface, why = 'มีกิจกรรมใหม่หลังเขียน handoff'): void {
+  if (s.rec?.phase !== 'pending') return
+  const { path } = s.rec
+  s.rec = null
+  s.note = MSG.stale(path)
+  void notify($, `ยกเลิก clear อัตโนมัติ ${why} (${path})`)
+}
+
+/** Takes the waiting stale line, if any, for whatever reaches the model next. */
+function takeNote(): string[] {
+  const note = s.note
+  s.note = null
+  return note ? [note] : []
+}
+
+async function observe($: EngineInterface): Promise<SessionUsage> {
+  const u = await $.session.usage()
+  if (s.startedAt !== null && u.startedAt !== s.startedAt) {
+    s.quiet = true
+    s.history = []
+    s.lastWarned = null
+  }
+  s.startedAt = u.startedAt
+  if (u.rateLimits.length > 0) s.rate = { limits: [...u.rateLimits], at: await $.clock.now() }
+  if (u.context.tokens !== undefined && u.context.tokens < SOFT) {
+    s.quiet = false
+    s.lastWarned = null
+  }
+  return u
+}
+
+/** The warning due at this reading, if any; the caller sets lastWarned only once it is attached. */
+function warningFor(tokens: number | undefined): string | null {
+  if (s.quiet || tokens === undefined) return null
+  const level = warnLevel(tokens, s.lastWarned)
+  return level && warnText(level, tokens, burn(s.history))
+}
+
+async function handoffCall($: EngineInterface, e: ToolCallInput, next: Next<'tool.call'>): Promise<ToolCallResult> {
+  const turnId = s.turnId
+  const input = e as { content?: unknown; mode?: unknown; reason?: unknown }
+
+  const tokens = await observe($).then(u => u.context.tokens, () => undefined)
+  const busyAgents = await $.agent.list().then(
+    list => list.filter(a => BUSY.includes(a.status)).length,
+    () => 1,
+  )
+  const no = refusal({
+    agentId: e.agentId,
+    content: input.content,
+    tokens,
+    quiet: s.quiet,
+    phase: s.rec?.phase ?? 'none',
+    tools: s.tools,
+    prompts: s.prompts,
+    busyAgents,
+  })
+  if (no) return { result: no }
+
+  const content = input.content as string
+  const mode: Mode = input.mode === 'auto' ? 'auto' : 'wait'
+  const reason = typeof input.reason === 'string' ? input.reason : ''
+  const g = (await read($, gen)) + 1
+
+  let path: string
+  try {
+    const git = await $.process.run(['git', 'rev-parse', '--absolute-git-dir'])
+    if (git.exitCode !== 0) return { result: MSG.saveFailed }
+    const dir = git.stdout.trim()
+    const now = await $.clock.now()
+    let n = 1
+    while (await $.fs.exists(handoffPath(dir, now, g, n))) n++
+    path = handoffPath(dir, now, g, n)
+    await $.fs.write(path, handoffDoc({ gen: g, mode, reason, now, content }))
+  } catch {
+    return { result: MSG.saveFailed }
+  }
+
+  // Re-check with no await in between: anything that arrived while git ran or the file was written wins.
+  if (s.prompts > 0) return { result: MSG.promptArrived }
+  if (s.tools > 0) return { result: MSG.siblings }
+  if (s.rec !== null) return { result: MSG.already }
+  if (next.signal.aborted || (turnId !== undefined && s.aborted.has(turnId))) return { result: MSG.promptArrived }
+
+  s.rec = {
+    phase: 'pending', path, content, gen: g, mode, reason, turnId,
+    userHasHandoff: false, userRepliedAfterCommit: false, turnBeforeClear: false, overwritten: [], cleared: false,
+  }
+  s.note = null
+  void notify($, `บันทึก handoff ไว้ที่ ${path} จะ clear เมื่อจบ turn นี้`)
+  return { result: MSG.saved(path) }
+}
+
+/** At the end of the handoff's turn: clear, then send the handoff as the new conversation's first message. */
+async function finalize($: EngineInterface, mine: Rec): Promise<void> {
+  let confirmed = false
+  try {
+    if (s.rec !== mine) return
+
+    const busy = await $.agent.list().then(list => list.some(a => BUSY.includes(a.status)), () => true)
+    if (s.rec !== mine) return
+    if (busy) return cancel($, 'subagent ยังทำงานอยู่')
+
+    const sid = await $.session.id()
+    const startedAt = (await $.session.usage()).startedAt
+    if (s.rec !== mine) return
+
+    // No await between committing and queueing the clear: nothing can slip in between.
+    mine.phase = 'committed'
+    s.quiet = true
+    const ran = await $.command.run({ command: 'clear' }).then(() => true, () => false)
+    mine.cleared = true
+
+    // The conversation may already be gone: a failed read here must not stop the handoff from being sent.
+    const sidAfter = await $.session.id().catch(() => sid)
+    const after = await $.session.usage().catch(() => null)
+    if (!ran || (sidAfter === sid && (after === null || after.startedAt === startedAt))) {
+      s.quiet = false
+      void notify($, `clear ไม่สำเร็จ บทสนทนาเดิมยังอยู่ handoff อยู่ที่ ${mine.path}`)
+      return
+    }
+    confirmed = true
+
+    let verdict: Verdict
+    try {
+      await update($, gen, () => (mine.userRepliedAfterCommit ? 0 : mine.gen))
+      verdict = guard(mine.mode, mine.gen, pickLimits(after?.rateLimits ?? [], s.rate, await $.clock.now()))
+    } catch {
+      // Without a saved generation the auto-continue cap cannot hold, so wait.
+      verdict = { auto: false, blocked: 'บันทึกตัวนับรุ่นไม่ได้' }
+    }
+    try {
+      await registerTool($)
+    } catch {
+      // The tool survives /clear anyway; registering again is only a safeguard.
+    }
+
+    if (mine.turnBeforeClear) {
+      const text = startText(mine, { auto: false, blocked: MSG.overwrittenBlock }, mine.overwritten)
+      const sent = await $.prompt.submit({ text }).then(r => r.drop === undefined, () => false)
+      void notify($, sent
+        ? `clear แล้ว มีข้อความของผู้ใช้ถูก clear ทับ รอผู้ใช้ (${mine.path})`
+        : `clear แล้ว แต่ส่ง handoff ไม่ได้ ดูที่ ${mine.path}`)
+      return
+    }
+    if (mine.userHasHandoff) {
+      void notify($, `clear แล้ว handoff แนบไปกับข้อความของผู้ใช้ (${mine.path})`)
+      return
+    }
+
+    const sent = await $.prompt.submit({ text: startText(mine, verdict) }).then(r => r.drop === undefined, () => false)
+    if (!sent) {
+      void notify($, `clear แล้ว แต่ส่ง handoff ไม่ได้ ดูที่ ${mine.path}`)
+      return
+    }
+    void notify($, verdict.auto
+      ? `clear แล้ว ทำต่อเองจาก handoff #${mine.gen}`
+      : `clear แล้ว รอผู้ใช้: ${verdict.blocked ?? mine.reason}`)
+  } catch {
+    if (!confirmed) s.quiet = false
+    void notify($, `handoff มีปัญหา ดูไฟล์ที่ ${mine.path}`)
+  } finally {
+    if (s.rec === mine) s.rec = null
+  }
+}
+
+export const register: Register = on => {
+  s = fresh()
+
+  on('session.start', async ($, e, next) => {
+    await registerTool($)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined) {
+      s.tools = 0
+      s.prompts = 0
+      s.turnId = e.turnId
+    }
+    const r = yield* next(e)
+    // A model response since startedAt changed means usage() now reads the new conversation.
+    if (e.agentId === undefined && s.rec?.phase !== 'committed') s.quiet = false
+    return r
+  })
+
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined && s.rec && s.rec.turnId !== e.turnId) {
+      // Someone else's turn got in before the clear ran: it will be cleared away, so quote it after.
+      if (s.rec.phase === 'committed' && !s.rec.cleared) s.rec.turnBeforeClear = true
+      cancel($)
+    }
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined && e.isAborted) {
+      s.aborted.add(e.turnId)
+      cancel($)
+    } else if (e.agentId === undefined && s.rec?.phase === 'pending' && s.rec.turnId === e.turnId) {
+      const mine = s.rec
+      $.clock.after(0, () => void finalize($, mine))
+    }
+    return next(e)
+  })
+
+  on('session.append', async ($, e, next) => {
+    if (e.agentId === undefined && e.door === 'delivery') {
+      s.prompts++
+      cancel($)
+    }
+    return next(e)
+  })
+
+  on('tool.call', async ($, e, next) => {
+    if (e.tool === TOOL) return handoffCall($, e, next)
+    if (e.agentId !== undefined) return next(e)
+
+    s.tools++
+    cancel($)
+
+    const r = await next(e)
+    if (r.deny !== undefined) return r
+
+    const tokens = (await observe($)).context.tokens
+    if (tokens !== undefined) s.history = [...s.history, tokens].slice(-(BURN_CALLS + 1))
+    const warning = warningFor(tokens)
+    const lines = [...takeNote(), ...(warning ? [warning] : [])]
+    if (lines.length === 0) return r
+
+    if (warning) s.lastWarned = tokens ?? null
+    return { ...r, context: [...(r.context ?? []), ...lines] }
+  }).catch(($, e, next) => (e.tool === TOOL ? { result: MSG.saveFailed } : next(e)))
+
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'plugin' && e.origin.name === $.plugin.name) return next(e)
+
+    s.prompts++
+    cancel($)
+    // Too late to cancel: the clear is under way, so this prompt carries the handoff instead.
+    const committed = s.rec?.phase === 'committed' ? s.rec : null
+    if (committed) {
+      committed.userHasHandoff = true
+      if (resetsGen(e.origin.kind)) committed.userRepliedAfterCommit = true
+      committed.overwritten.push(e.text)
+    }
+
+    if (resetsGen(e.origin.kind)) await update($, gen, () => 0)
+    const tokens = (await observe($).catch(() => null))?.context.tokens
+    const warning = warningFor(tokens)
+    const lines = [...(committed ? [MSG.committed(committed.content)] : []), ...takeNote(), ...(warning ? [warning] : [])]
+    if (lines.length === 0) return next(e)
+
+    if (warning) s.lastWarned = tokens ?? null
+    return next({ ...e, context: [...(e.context ?? []), ...lines] })
+  }).catch(($, e, next) => next(e))
+}

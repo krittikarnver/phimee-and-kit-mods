@@ -12,6 +12,7 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 /plugin install kit-usage@phimee-and-kit-mods
 /plugin install kit-scrutinize@phimee-and-kit-mods
 /plugin install kit-update@phimee-and-kit-mods
+/plugin install kit-checkpoint@phimee-and-kit-mods
 ```
 
 เลือกติดตั้งเฉพาะตัวที่อยากใช้ก็ได้ แต่ละตัวทำงานแยกกัน
@@ -60,6 +61,21 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 - ถ้า plugin ที่ใช้ command source เปลี่ยน install command, Claude Code ไม่ให้ accept จากใน session จะได้คำสั่ง `--accept-command <sha256>` ไว้ review แล้วรันเองใน terminal
 
 ต้องใช้ Claude Code v2.1.268 ขึ้นไป และต้องมี `jq` รันจาก terminal ตรงๆ ก็ได้: `bash plugins/kit-update/scripts/update-all.sh --help`
+
+### kit-checkpoint
+
+limit หมดเร็วเพราะขนาดของ context ไม่ใช่ output ทุกข้อความต้องส่ง context ทั้งก้อนไปใหม่ ตัวนี้ทำแทนสิ่งที่เคยทำมือ คือ copy handoff → `/clear` → paste แล้วทำงานต่อใน session เดิมที่ context เหลือนิดเดียว ไม่ต้องคอยดู statusline
+
+- context ของ session หลักเกิน **400K**: บอก Claude ว่าใช้ไปเท่าไหร่ เหลือเท่าไหร่ก่อนถึง 500K และโตเร็วแค่ไหน ให้หาจุดหยุดที่ checkpoint ถัดไป (เตือนซ้ำทุก +25K)
+- เกิน **500K**: บอกให้หยุดทันทีที่หยุดได้อย่างปลอดภัย
+- ไม่ขวาง tool call ใดๆ แค่เตือน
+- Claude เรียก tool `handoff` → mod เขียนไฟล์ลง `.git/kit-handoff/` (ไม่ถูก commit ไม่เขียนทับไฟล์เดิม) → พอจบ turn ก็ `/clear` → ส่ง handoff เป็นข้อความแรกของบทสนทนาใหม่
+- ทุกขั้นแจ้งผ่าน notification ของ terminal (`$.ui.notify`) แต่บน Orca จะไม่ขึ้น เพราะ terminal ของ Orca ไม่รับสัญญาณแบบนี้ ตอนต้องรอผู้ใช้ Claude จะหยุดรอ แล้ว Orca แจ้งเตือนเองผ่าน hook `Stop` (มือถือได้ push เฉพาะตอน Mac ล็อกจอหรือไม่ได้ใช้เกิน 3 นาที)
+- ถ้ามีข้อความ, Esc, tool call หรือ subagent เข้ามาหลังเขียน handoff จะยกเลิก clear อัตโนมัติ ถ้าเขียนไฟล์ไม่ได้ (เช่นไม่ใช่ git repo) จะไม่ clear
+- ทำต่อเองได้เมื่อ Claude บอกว่าขั้นต่อไปชัดแล้ว, ยังทำต่อเองไม่ถึง 3 รอบติดกันหลังข้อความล่าสุดของผู้ใช้, และมีตัวเลข limit 5 ชม. < 90% กับ 7 วัน < 85% ไม่ผ่านข้อไหนก็ยัง clear แต่รอผู้ใช้
+- ใช้กับ model ที่มี context window 1M (window 200K ไม่มีวันถึงเกณฑ์ ไม่มีอะไรพัง แค่ไม่ทำงาน) เกณฑ์ทั้งหมดตั้งค่าไม่ได้
+- ใน worktree ไฟล์อยู่ใต้ `.git/worktrees/<ชื่อ>/kit-handoff/` จึงหายไปพร้อม `git worktree remove`
+- mod มองไม่เห็น agent ของ Workflow, Bash background และ Monitor และ `/clear` อาจหยุดพวกนั้น ก่อนให้ Claude เรียก handoff ควรรอให้จบก่อน
 
 ## พัฒนา
 
