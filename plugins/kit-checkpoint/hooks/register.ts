@@ -69,8 +69,6 @@ const TOOL_SPEC = {
 }
 
 function notify($: EngineInterface, text: string): Promise<unknown> {
-  // Orca pushes to the phone from its own Stop hook, not from Notification; the toast at least shows on screen.
-  $.ui.toast(text)
   return $.ui.notify(text, { title: 'kit-checkpoint' }).catch(() => {})
 }
 
