@@ -94,6 +94,7 @@ test('start text', () => {
   expect(wait).toContain('ทำต่อเองครบ 3 รอบแล้ว')
   expect(wait).toContain('> แก้ตรงนี้ด้วย')
   expect(wait).not.toContain(MSG.goOn)
+  expect(startText({ ...h, reason: '' }, { auto: false })).not.toContain('()')
 })
 
 test('which origins reset the generation', () => {

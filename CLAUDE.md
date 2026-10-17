@@ -8,7 +8,7 @@ A Claude Code plugin marketplace (`.claude-plugin/marketplace.json`) with one fo
 
 There are two kinds of plugin here:
 
-- **Hooks-module mods** (`kit-time`, `kit-usage`). `hooks/hooks.json` is `{ "modules": ["./register.tsx"] }`, and the module exports `register: Register` from `'claude-code'`. The module runs in the engine's own sandbox with no Node and no DOM, so everything goes through `$` (`$.session.usage()`, `$.clock`, `$.store`, `$.fs`, `$.ui`). JSX renders through `$.ui.resolve(e)`.
+- **Hooks-module mods** (`kit-time`, `kit-usage`, `kit-checkpoint`). `hooks/hooks.json` is `{ "modules": ["./register.tsx"] }` (`./register.ts` in `kit-checkpoint`, which has no UI), and the module exports `register: Register` from `'claude-code'`. The module runs in the engine's own sandbox with no Node and no DOM, so everything goes through `$` (`$.session.usage()`, `$.clock`, `$.store`, `$.fs`, `$.ui`). JSX renders through `$.ui.resolve(e)`.
 - **Markdown plugins** (`kit-scrutinize`: skill + agent; `kit-update`: commands that run `scripts/update-all.sh`).
 
 ## Commands
@@ -25,7 +25,7 @@ bash plugins/kit-update/scripts/update-all.sh --dry-run   # KIT_UPDATE_CLAUDE_BI
 
 - **Types are generated, not committed.** Each mod's `tsconfig.json` extends `./.claude-plugin/types/tsconfig.json`, which the engine writes when it loads the mod (e.g. via `--plugin-dir`). It's gitignored, so `tsc` fails on a fresh checkout until the mod has been loaded once. The full API, with every event and `$` method documented, is in `.claude-plugin/types/claude-code/index.d.ts`.
 - **Session state** goes through `atom({ plugin, key })` + `read`/`update`, and every key must be declared in `types/index.d.ts` under `interface PluginState` (named in `plugin.json` as `"types"`). `validate` enforces this.
-- **Pure logic is kept testable.** Formatting lives in plain exported functions (`kit-usage/hooks/format.ts`, the `format*` exports in `kit-time/hooks/register.tsx`), and tests import those from `'claude-code/testing'` instead of driving hooks.
+- **Pure logic is kept testable.** Formatting lives in plain exported functions (`kit-usage/hooks/format.ts`, the `format*` exports in `kit-time/hooks/register.tsx`, `kit-checkpoint/hooks/logic.ts`), and tests import those from `'claude-code/testing'` instead of driving hooks. `kit-checkpoint/hooks/register.test.ts` is the exception: it drives the hooks against a mocked engine (`world()`), because the clear/handoff flow depends on event order.
 - **How context reaches Claude:** `prompt.submit` hooks call `next({ ...e, context: [...(e.context ?? []), line] })`. Lines start with `[plugin-name]`. A hook must never block a prompt: catch, then `next(e)`.
 - **Time is Asia/Bangkok** (fixed UTC+7 offset, no DST). Dates use Thai month abbreviations and the BE year (+543).
 

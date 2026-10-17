@@ -75,7 +75,8 @@ limit หมดเร็วเพราะขนาดของ context ไม�
 - ทำต่อเองได้เมื่อ Claude บอกว่าขั้นต่อไปชัดแล้ว, ยังทำต่อเองไม่ถึง 3 รอบติดกันหลังข้อความล่าสุดของผู้ใช้, และมีตัวเลข limit 5 ชม. < 90% กับ 7 วัน < 85% ไม่ผ่านข้อไหนก็ยัง clear แต่รอผู้ใช้
 - ใช้กับ model ที่มี context window 1M (window 200K ไม่มีวันถึงเกณฑ์ ไม่มีอะไรพัง แค่ไม่ทำงาน) เกณฑ์ทั้งหมดตั้งค่าไม่ได้
 - ใน worktree ไฟล์อยู่ใต้ `.git/worktrees/<ชื่อ>/kit-handoff/` จึงหายไปพร้อม `git worktree remove`
-- mod มองไม่เห็น agent ของ Workflow, Bash background และ Monitor และ `/clear` อาจหยุดพวกนั้น ก่อนให้ Claude เรียก handoff ควรรอให้จบก่อน
+- Workflow, Bash background และ Monitor ยังทำงานต่อหลัง `/clear` ผลหรือ event ของพวกนี้จะเข้ามาในบทสนทนาใหม่ Claude จะรายงานให้รู้แต่ไม่ลงมือทำตาม ถ้า event เข้ามาหลังเขียน handoff แล้วจะยกเลิก clear และ Claude จะเรียก handoff ใหม่
+- agent ที่ตั้งชื่อไว้และรอข้อความอยู่ (idle) จะถูกปิดตอน `/clear` และส่ง SendMessage หาไม่ได้อีก
 
 ## พัฒนา
 
