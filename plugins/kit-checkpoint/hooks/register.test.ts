@@ -273,15 +273,16 @@ test('wait mode asks the user', async ($, on) => {
   expect(w.submits[0]).toContain(MSG.stay('ทดสอบ'))
 })
 
-test('fourth generation waits; a user reply resets it', async ($, on) => {
+test('sixth generation waits; a user reply resets it', async ($, on) => {
   const { w, clock } = world(on)
-  for (const t of ['T1', 'T2', 'T3']) await cycle($, w, clock, t)
-  await cycle($, w, clock, 'T4')
-  expect(w.submits.map(x => x.slice(0, 18))).toEqual(['[kit-checkpoint #1', '[kit-checkpoint #2', '[kit-checkpoint #3', '[kit-checkpoint #4'])
-  expect(w.submits[3]).not.toContain(MSG.goOn)
+  for (const t of ['T1', 'T2', 'T3', 'T4', 'T5']) await cycle($, w, clock, t)
+  expect(w.submits.every(x => x.includes(MSG.goOn))).toBe(true)
+  await cycle($, w, clock, 'T6')
+  expect(w.submits.map(x => x.slice(0, 18))).toEqual(['#1', '#2', '#3', '#4', '#5', '#6'].map(n => `[kit-checkpoint ${n}`))
+  expect(w.submits[5]).not.toContain(MSG.goOn)
   await user($, 'ไปต่อ')
-  await cycle($, w, clock, 'T5')
-  expect(w.submits[4]?.startsWith('[kit-checkpoint #1]')).toBe(true)
+  await cycle($, w, clock, 'T7')
+  expect(w.submits[6]?.startsWith('[kit-checkpoint #1]')).toBe(true)
 })
 
 test('task notifications do not reset the generation', async ($, on) => {

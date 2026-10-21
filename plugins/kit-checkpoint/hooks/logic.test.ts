@@ -56,10 +56,10 @@ test('limits: current, fresh cache, stale cache', () => {
 
 test('guard', () => {
   expect(guard('auto', 1, both)).toEqual({ auto: true })
-  expect(guard('auto', 3, both)).toEqual({ auto: true })
+  expect(guard('auto', 5, both)).toEqual({ auto: true })
   expect(guard('wait', 1, both)).toEqual({ auto: false })
   for (const v of [
-    guard('auto', 4, both),
+    guard('auto', 6, both),
     guard('auto', 1, null),
     guard('auto', 1, [both[0]]),
     guard('auto', 1, [both[1]]),
@@ -89,9 +89,9 @@ test('start text', () => {
   expect(auto.startsWith('[kit-checkpoint #2] /repo/.git/kit-handoff/x.md\n\n# งาน')).toBe(true)
   expect(auto).toContain(MSG.bgNote)
   expect(auto).toContain(MSG.goOn)
-  const wait = startText(h, { auto: false, blocked: 'ทำต่อเองครบ 3 รอบแล้ว' }, ['แก้ตรงนี้ด้วย'])
+  const wait = startText(h, { auto: false, blocked: 'ทำต่อเองครบ 5 รอบแล้ว' }, ['แก้ตรงนี้ด้วย'])
   expect(wait).toContain(MSG.stay('รอเลือก API'))
-  expect(wait).toContain('ทำต่อเองครบ 3 รอบแล้ว')
+  expect(wait).toContain('ทำต่อเองครบ 5 รอบแล้ว')
   expect(wait).toContain('> แก้ตรงนี้ด้วย')
   expect(wait).not.toContain(MSG.goOn)
   expect(startText({ ...h, reason: '' }, { auto: false })).not.toContain('()')
