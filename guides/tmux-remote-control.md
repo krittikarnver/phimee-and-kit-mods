@@ -64,6 +64,8 @@ ccc() {
 
 `cc` ใช้จากใน tmux ไม่ได้ (tmux ไม่ซ้อน session) ให้ใช้ `Ctrl-b s` แทน
 
+อัปเดต plugin แล้ว ใช้ `/kit-update:reload` พิมพ์ `/reload-plugins` ให้ทุก session ที่ว่างอยู่ได้ในคำสั่งเดียว (ต้องติดตั้ง kit-update)
+
 ## 5. ssh จากมือถือ (ไม่บังคับ)
 
 ใช้ตอนต้อง attach tmux จากข้างนอก ผ่าน [Tailscale](https://tailscale.com) และแอป ssh บนมือถือ (เช่น Moshi)

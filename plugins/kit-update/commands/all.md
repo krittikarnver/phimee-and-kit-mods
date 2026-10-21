@@ -15,7 +15,7 @@ Then report back in the user's language, briefly:
 1. One line with the counts from the script's `Summary` line.
 2. The updated plugins with old → new version, if any.
 3. Failures, each with its reason. If the script printed commands under "need you to accept a changed install command", show them in a code block and explain that Claude Code ignores `-y` / `--accept-command` when run from inside a session, so the user must review the command and run it in their own terminal.
-4. If anything was updated, remind the user to run `/reload-plugins` (you cannot run it for them).
+4. If anything was updated, remind the user to run `/reload-plugins` here (you cannot run it for them), and that `/kit-update:reload` types it into their other idle Claude sessions in tmux.
 
 Rules:
 - Do not retry failed updates, run individual `claude plugin update` calls, or edit anything under `~/.claude/plugins/` yourself.

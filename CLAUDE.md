@@ -9,7 +9,7 @@ A Claude Code plugin marketplace (`.claude-plugin/marketplace.json`) with one fo
 There are two kinds of plugin here:
 
 - **Hooks-module mods** (`kit-time`, `kit-usage`, `kit-checkpoint`). `hooks/hooks.json` is `{ "modules": ["./register.tsx"] }` (`./register.ts` in `kit-checkpoint`, which has no UI), and the module exports `register: Register` from `'claude-code'`. The module runs in the engine's own sandbox with no Node and no DOM, so everything goes through `$` (`$.session.usage()`, `$.clock`, `$.store`, `$.fs`, `$.ui`). JSX renders through `$.ui.resolve(e)`.
-- **Markdown plugins** (`kit-scrutinize`: skill + agent; `kit-update`: commands that run `scripts/update-all.sh`).
+- **Markdown plugins** (`kit-scrutinize`: skill + agent; `kit-update`: commands that run `scripts/update-all.sh` and `scripts/reload-all.sh`).
 
 ## Commands
 
@@ -19,6 +19,7 @@ claude plugin test ./plugins/<name>       # runs every *.test.ts(x) under the fo
 claude --plugin-dir ./plugins/<name>      # start a session with the local copy loaded
 tsc -p ./plugins/<name>                   # type-check; only works after the engine has generated types (below)
 bash plugins/kit-update/scripts/update-all.sh --dry-run   # KIT_UPDATE_CLAUDE_BIN=<fake> to stub the claude CLI
+bash plugins/kit-update/scripts/reload-all.test.sh       # self-check for reload-all.sh against a fake tmux (KIT_UPDATE_TMUX_BIN)
 ```
 
 ## Mod conventions
