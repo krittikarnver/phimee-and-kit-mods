@@ -1,6 +1,6 @@
 {
   "name": "kit-update",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "/kit-update:all อัปเดต plugin ทุกตัวที่ติดตั้งไว้ในคำสั่งเดียว refresh marketplace ก่อน แล้วสรุปว่าตัวไหนเปลี่ยน version",
   "author": {
     "name": "Kit"

@@ -54,14 +54,15 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 - `/kit-update:all` refresh marketplace ทั้งหมด → อัปเดตทุก install ตาม scope ของมัน → สรุปว่าตัวไหนเปลี่ยนจาก version ไหนเป็นอะไร (diff จาก `plugin list --json` ก่อน-หลัง ไม่ได้เชื่อแค่ว่าคำสั่งตอบ ok)
 - `/kit-update:check-all-projects` และ `/kit-update:all-projects` ทำเหมือนกัน แต่รวม install ระดับ project/local ของ project อื่นด้วย (สองตัวแรกทำเฉพาะของ project ปัจจุบัน)
 - เสร็จแล้วพิมพ์ `/reload-plugins` เอง Claude สั่งแทนไม่ได้
-- command ทั้งสี่ไม่รับ argument ข้อความที่พิมพ์ต่อท้ายไม่ถูกใส่ลงในคำสั่ง shell และ Claude ถูกสั่งให้ไม่ทำตาม ถ้าต้องใช้ flag อื่น (`--only '<regex>'`, `--scope user,project`, `--no-marketplaces`, `-y`) ให้รัน script ตรงจาก terminal
+- `/kit-update:reload` พิมพ์ `/reload-plugins` ให้ทุก Claude session อื่นที่รันใน tmux และว่างอยู่ ข้าม session ที่กำลังทำงาน มีคำถามค้าง หรือพิมพ์ค้างไว้ (อ่านจากหน้าจอ ไม่แน่ใจก็ข้าม) session ที่สั่งต้องพิมพ์เอง ไม่ใช้ tmux ก็ทำอะไรไม่ได้
+- command ทั้งห้าไม่รับ argument ข้อความที่พิมพ์ต่อท้ายไม่ถูกใส่ลงในคำสั่ง shell และ Claude ถูกสั่งให้ไม่ทำตาม ถ้าต้องใช้ flag อื่น (`--only '<regex>'`, `--scope user,project`, `--no-marketplaces`, `-y`) ให้รัน script ตรงจาก terminal
 - install ของ project ที่ไม่มีโฟลเดอร์แล้วจะถูกข้ามพร้อมบอกเหตุผล
 - ข้าม plugin ที่ไม่ได้มาจาก marketplace (`@synced`, `@inline`, `@skills-dir`) แล้วบอกรายชื่อไว้ท้ายสรุป
   - `@synced` คือ plugin ที่ sync มาจาก claude.ai (เช่นใน cloud session) ตัวพวกนี้อัปเดตผ่าน claude.ai ไม่ใช่ที่นี่
   - ถ้าใช้ kit-scrutinize แบบ sync ต้อง sync `9arm-skills` ไปด้วย ไม่งั้น kit-scrutinize จะถูกปิดเพราะหา dependency ไม่เจอ
 - ถ้า plugin ที่ใช้ command source เปลี่ยน install command, Claude Code ไม่ให้ accept จากใน session จะได้คำสั่ง `--accept-command <sha256>` ไว้ review แล้วรันเองใน terminal
 
-ต้องใช้ Claude Code v2.1.268 ขึ้นไป และต้องมี `jq` รันจาก terminal ตรงๆ ก็ได้: `bash plugins/kit-update/scripts/update-all.sh --help`
+ต้องใช้ Claude Code v2.1.268 ขึ้นไป และต้องมี `jq` รันจาก terminal ตรงๆ ก็ได้: `bash plugins/kit-update/scripts/update-all.sh --help` (`/kit-update:reload` คือ `scripts/reload-all.sh`)
 
 ### kit-checkpoint
 
