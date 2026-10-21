@@ -70,21 +70,15 @@ const TOOL_SPEC = {
   },
 }
 
-function notify($: EngineInterface, text: string): Promise<unknown> {
-  return $.ui.notify(text, { title: 'kit-checkpoint' }).catch(() => {})
-}
-
 async function registerTool($: EngineInterface): Promise<void> {
   await $.tool.register(TOOL_SPEC)
 }
 
 /** Something happened after the handoff was written: a pending one is stale, so no clear. */
-function cancel($: EngineInterface, why = 'มีกิจกรรมใหม่หลังเขียน handoff'): void {
+function cancel(): void {
   if (s.rec?.phase !== 'pending') return
-  const { path } = s.rec
+  s.note = MSG.stale(s.rec.path)
   s.rec = null
-  s.note = MSG.stale(path)
-  void notify($, `ยกเลิก clear อัตโนมัติ ${why} (${path})`)
 }
 
 /** Takes the waiting stale line, if any, for whatever reaches the model next. */
@@ -168,7 +162,6 @@ async function handoffCall($: EngineInterface, e: ToolCallInput, next: Next<'too
     userHasHandoff: false, userRepliedAfterCommit: false, turnBeforeClear: false, overwritten: [], cleared: false,
   }
   s.note = null
-  void notify($, `บันทึก handoff ไว้ที่ ${path} จะ clear เมื่อจบ turn นี้`)
   return { result: MSG.saved(path) }
 }
 
@@ -186,7 +179,7 @@ async function finalize($: EngineInterface, mine: Rec): Promise<void> {
     // Last await before the commit, so a subagent has the least time to start unseen.
     const busy = await $.agent.list().then(list => list.some(a => BUSY.includes(a.status)), () => true)
     if (s.rec !== mine) return
-    if (busy) return cancel($, 'subagent ยังทำงานอยู่')
+    if (busy) return cancel()
 
     // No await between committing and queueing the clear: nothing can slip in between.
     mine.phase = 'committed'
@@ -199,7 +192,6 @@ async function finalize($: EngineInterface, mine: Rec): Promise<void> {
     const after = await $.session.usage().catch(() => null)
     if (!ran || (sidAfter === sid && (after === null || after.startedAt === startedAt))) {
       s.quiet = false
-      void notify($, `clear ไม่สำเร็จ บทสนทนาเดิมยังอยู่ handoff อยู่ที่ ${mine.path}`)
       return
     }
     confirmed = true
@@ -219,29 +211,15 @@ async function finalize($: EngineInterface, mine: Rec): Promise<void> {
     }
 
     if (mine.turnBeforeClear) {
-      const text = startText(mine, { auto: false, blocked: MSG.overwrittenBlock }, mine.overwritten)
-      const sent = await $.prompt.submit({ text }).then(r => r.drop === undefined, () => false)
-      void notify($, sent
-        ? `clear แล้ว มีข้อความถูก clear ทับ รอผู้ใช้ (${mine.path})`
-        : `clear แล้ว แต่ส่ง handoff ไม่ได้ ดูที่ ${mine.path}`)
+      await $.prompt.submit({ text: startText(mine, { auto: false, blocked: MSG.overwrittenBlock }, mine.overwritten) })
       return
     }
-    if (mine.userHasHandoff) {
-      void notify($, `clear แล้ว handoff แนบไปกับข้อความของผู้ใช้ (${mine.path})`)
-      return
-    }
+    // The user's prompt already carries the handoff.
+    if (mine.userHasHandoff) return
 
-    const sent = await $.prompt.submit({ text: startText(mine, verdict) }).then(r => r.drop === undefined, () => false)
-    if (!sent) {
-      void notify($, `clear แล้ว แต่ส่ง handoff ไม่ได้ ดูที่ ${mine.path}`)
-      return
-    }
-    void notify($, verdict.auto
-      ? `clear แล้ว ทำต่อเองจาก handoff #${mine.gen}`
-      : `clear แล้ว รอผู้ใช้: ${verdict.blocked ?? mine.reason}`)
+    await $.prompt.submit({ text: startText(mine, verdict) })
   } catch {
     if (!confirmed) s.quiet = false
-    void notify($, `handoff มีปัญหา ดูไฟล์ที่ ${mine.path}`)
   } finally {
     if (s.rec === mine) s.rec = null
   }
@@ -275,7 +253,7 @@ export const register: Register = on => {
         // Its prompt may have been queued before the commit, so prompt.submit never quoted it.
         if (e.text && !s.rec.overwritten.includes(e.text)) s.rec.overwritten.push(e.text)
       }
-      cancel($)
+      cancel()
     }
     return next(e)
   })
@@ -283,7 +261,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined && e.isAborted) {
       s.aborted = [...s.aborted, e.turnId].slice(-10)
-      cancel($)
+      cancel()
     } else if (e.agentId === undefined && s.rec?.phase === 'pending' && s.rec.turnId === e.turnId) {
       const mine = s.rec
       $.clock.after(0, () => void finalize($, mine))
@@ -294,7 +272,7 @@ export const register: Register = on => {
   on('session.append', async ($, e, next) => {
     if (e.agentId === undefined && e.door === 'delivery') {
       s.prompts++
-      cancel($)
+      cancel()
     }
     return next(e)
   })
@@ -304,7 +282,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined) return next(e)
 
     s.tools++
-    cancel($)
+    cancel()
 
     const r = await next(e)
     if (r.deny !== undefined) return r
@@ -323,7 +301,7 @@ export const register: Register = on => {
     if (e.origin.kind === 'plugin' && e.origin.name === $.plugin.name) return next(e)
 
     s.prompts++
-    cancel($)
+    cancel()
     // Too late to cancel: the clear is under way, so this prompt carries the handoff instead.
     const committed = s.rec?.phase === 'committed' ? s.rec : null
     // A slash command may never reach the model, so it cannot carry the handoff: the start message still goes.

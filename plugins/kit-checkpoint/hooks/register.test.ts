@@ -15,7 +15,7 @@ function world(on: On) {
     agents: [] as { id: string; status: AgentStatus }[],
     files: new Map<string, string>(), commands: [] as string[], submits: [] as string[], notes: [] as string[], specs: [] as unknown[],
     toolsRan: [] as string[], git: true, clear: 'works' as 'works' | 'noop' | 'reject', submit: 'ok' as 'ok' | 'drop',
-    holdWrite: 0, holdClear: 0, holdList: 0, usageThrows: false, notifyThrows: false, writeThrows: false,
+    holdWrite: 0, holdClear: 0, holdList: 0, usageThrows: false, writeThrows: false,
   }
   const clock = mock.clock(on, { now: T0 })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
@@ -45,7 +45,6 @@ function world(on: On) {
   })
   on('ui.notify', async (_$, e) => {
     w.notes.push(e.text)
-    if (w.notifyThrows) throw new Error('notify')
     return { value: { isSent: true as const, channel: 'ghostty' as const } }
   })
   on('prompt.submit', async (_$, e) => {
@@ -131,8 +130,6 @@ test('saves the file and answers', async ($, on) => {
   expect(r.result).toBe(MSG.saved(P1))
   expect(r.context).toBeUndefined() // ไม่แนบคำเตือนกับผลของ handoff
   expect(w.files.get(P1)).toContain('generation: 1\nmode: auto\nreason: "ทดสอบ"')
-  await clock.settle() // notify ยิงแบบไม่ await
-  expect(w.notes.some(n => n.includes(P1))).toBe(true)
 })
 
 test('never overwrites an existing file', async ($, on) => {
@@ -252,7 +249,7 @@ async function cycle($: Engine, w: World["w"], clock: World["clock"], t: string,
   w.tokens = 450_000
   await step($, t)
   const r = await handoff($, mode)
-  await clock.settle(); w.notes.length = 0 // notify ตอนบันทึกมี path อยู่แล้ว ล้างทิ้งให้ test เห็นเฉพาะ notify ของ finalize
+  await clock.settle()
   await done($, t)
   await clock.settle()
   return r
@@ -337,11 +334,10 @@ test('delivery and a foreign turn cancel', async ($, on) => {
 test('busy subagent at finalize cancels', async ($, on) => {
   const { w, clock } = world(on)
   await step($, 'T1'); await handoff($)
-  await clock.settle(); w.notes.length = 0
   w.agents = [{ id: 'a1', status: 'running' }]
   await done($, 'T1'); await clock.settle()
   expect(w.commands).toEqual([])
-  expect(w.notes.some(n => n.includes(P1))).toBe(true)
+  expect(ctx(await bash($))).toContain(MSG.stale(P1))
 })
 
 test('clear that changes nothing: no submit', async ($, on) => {
@@ -349,7 +345,6 @@ test('clear that changes nothing: no submit', async ($, on) => {
   w.clear = 'noop'
   await cycle($, w, clock, 'T1')
   expect(w.submits).toEqual([])
-  expect(w.notes.some(n => n.includes(P1))).toBe(true)
 })
 
 test('clear rejects: no submit, next handoff accepted', async ($, on) => {
@@ -357,7 +352,6 @@ test('clear rejects: no submit, next handoff accepted', async ($, on) => {
   w.clear = 'reject'
   await cycle($, w, clock, 'T1')
   expect(w.submits).toEqual([])
-  expect(w.notes.some(n => n.includes(P1))).toBe(true)
   // context ยังอยู่ ~450K ไม่มีค่าต่ำกว่า 400K มาช่วยปลด quiet: finalize ต้องปลดเอง
   w.clear = 'works'
   expect(ctx(await bash($))).toContain(MSG.soft)
@@ -428,7 +422,7 @@ test('dropped start message: state returns to none', async ($, on) => {
   const { w, clock } = world(on)
   w.submit = 'drop'
   await cycle($, w, clock, 'T1')
-  expect(w.notes.some(n => n.includes(P1))).toBe(true)
+  expect(w.submits).toHaveLength(1)
   w.submit = 'ok'
   await clock.advance(1000)
   expect((await cycle($, w, clock, 'T2')).result).toContain('บันทึก handoff ไว้ที่')
@@ -446,19 +440,17 @@ test('an old finalize never touches a newer record', async ($, on) => {
   expect(w.submits[0]).toContain(String(b.result).match(/\/repo\S+\.md/)![0])
 })
 
-test('notify failures never stop the flow', async ($, on) => {
+test('never sends a notification', async ($, on) => {
   const { w, clock } = world(on)
-  w.notifyThrows = true
-  expect((await cycle($, w, clock, 'T1')).result).toBe(MSG.saved(P1))
-  expect(w.commands).toEqual(['clear'])
-  expect(w.submits).toHaveLength(1)
+  await cycle($, w, clock, 'T1') // clear, then carry on alone
+  await cycle($, w, clock, 'T2', 'wait') // clear, then wait for the user
+  w.clear = 'reject'; await cycle($, w, clock, 'T3') // the clear fails
+  w.clear = 'works'
   w.tokens = 30_000; await bash($); w.tokens = 450_000
-  await step($, 'T2'); await handoff($)
-  w.agents = [{ id: 'a1', status: 'running' }] // finalize ยกเลิก: notify แล้ว return
-  await done($, 'T2'); await clock.settle()
-  w.agents = []
-  expect((await cycle($, w, clock, 'T3')).result).toContain('บันทึก handoff ไว้ที่') // สถานะกลับเป็น none
-  expect(w.commands).toEqual(['clear', 'clear'])
+  await step($, 'T4'); await handoff($); await bash($) // a sibling cancels it
+  await done($, 'T4'); await clock.settle()
+  expect(w.submits).toHaveLength(2)
+  expect(w.notes).toEqual([])
 })
 
 test('a usage failure after the clear still sends the handoff', async ($, on) => {

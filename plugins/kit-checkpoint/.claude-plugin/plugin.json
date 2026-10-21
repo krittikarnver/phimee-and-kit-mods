@@ -1,1 +1,1 @@
-{ "name": "kit-checkpoint", "version": "0.1.2", "description": "เตือน Claude ตอน context ของ session หลักเกิน 400K/500K ให้เขียน handoff ลง .git แล้ว /clear และส่ง handoff ต่อเป็นข้อความแรก ทำต่อเองได้เมื่อผ่านกันชน", "author": { "name": "Kit" }, "types": "./types/index.d.ts" }
+{ "name": "kit-checkpoint", "version": "0.1.3", "description": "เตือน Claude ตอน context ของ session หลักเกิน 400K/500K ให้เขียน handoff ลง .git แล้ว /clear และส่ง handoff ต่อเป็นข้อความแรก ทำต่อเองได้เมื่อผ่านกันชน", "author": { "name": "Kit" }, "types": "./types/index.d.ts" }
