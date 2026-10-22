@@ -80,9 +80,9 @@ limit หมดเร็วเพราะขนาดของ context ไม�
 - Workflow, Bash background และ Monitor ยังทำงานต่อหลัง `/clear` ผลหรือ event ของพวกนี้จะเข้ามาในบทสนทนาใหม่ Claude จะรายงานให้รู้แต่ไม่ลงมือทำตาม ถ้า event เข้ามาหลังเขียน handoff แล้วจะยกเลิก clear และ Claude จะเรียก handoff ใหม่
 - agent ที่ตั้งชื่อไว้และรอข้อความอยู่ (idle) จะถูกปิดตอน `/clear` และส่ง SendMessage หาไม่ได้อีก
 
-## ใช้ Claude Code ผ่าน tmux + Remote Control
+## ใช้ Claude Code ผ่าน tmux หรือ herdr + Remote Control
 
-ให้ Claude ของแต่ละ repo รันค้างใน tmux แล้วคุยต่อจากมือถือหรือ Claude desktop ได้ ดูขั้นตอนตั้งค่า (`settings.json`, `~/.tmux.conf`, `~/.zshrc`, ssh ผ่าน Tailscale) ที่ [guides/tmux-remote-control.md](guides/tmux-remote-control.md) เป็นคำแนะนำ ไม่มี script ติดตั้งให้
+ให้ Claude ของแต่ละ repo รันค้างใน tmux หรือ herdr แล้วคุยต่อจากมือถือหรือ Claude desktop ได้ ดูขั้นตอนตั้งค่า (`settings.json`, `~/.tmux.conf` หรือ herdr, `~/.zshrc`, ssh ผ่าน Tailscale) ที่ [guides/tmux-remote-control.md](guides/tmux-remote-control.md) เป็นคำแนะนำ ไม่มี script ติดตั้งให้
 
 ## พัฒนา
 
