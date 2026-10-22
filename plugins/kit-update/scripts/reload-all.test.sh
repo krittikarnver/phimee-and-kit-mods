@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-check for reload-all.sh against a fake tmux: which panes get keys, which are skipped.
+# Self-check for reload-all.sh against a fake tmux and a fake herdr: which panes get keys, which are skipped.
 # Run: bash plugins/kit-update/scripts/reload-all.test.sh
 
 set -uo pipefail
@@ -16,18 +16,68 @@ case "$1" in
   send-keys) shift; echo "$*" >>"$FAKE/sent" ;;
 esac
 EOF
-chmod +x "$FAKE/tmux"
-export FAKE KIT_UPDATE_TMUX_BIN="$FAKE/tmux"
+cat >"$FAKE/herdr" <<'EOF'
+#!/usr/bin/env bash
+# fake herdr: agents from $FAKE/agents, screens from $FAKE/hscreen-<pane>, prompts logged to $FAKE/prompted
+case "$1 $2" in
+  "agent list") [[ -f "$FAKE/agents" ]] && cat "$FAKE/agents" ;;
+  "agent read") cat "$FAKE/hscreen-$3" ;;
+  "agent prompt") echo "$3 $4" >>"$FAKE/prompted" ;;
+esac
+EOF
+chmod +x "$FAKE/tmux" "$FAKE/herdr"
+export FAKE KIT_UPDATE_TMUX_BIN="$FAKE/tmux" KIT_UPDATE_HERDR_BIN="$FAKE/herdr"
 
 fails=0
 check() { # $1 = label, $2 = condition result
   if [[ "$2" == 0 ]]; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi
 }
 
-# no tmux server
+# neither tmux nor herdr
 out=$(bash "$here/reload-all.sh")
-grep -q 'No tmux server' <<<"$out"; check "no server: says so" $?
+grep -q 'No tmux or herdr server' <<<"$out"; check "no server: says so" $?
 
+# herdr only
+agent() { # $1 pane, $2 name or null, $3 cwd, $4 kind, $5 state
+  printf '{"pane_id":"%s","name":%s,"cwd":"%s","agent":"%s","agent_status":"%s"}' "$@"
+}
+{
+  printf '{"result":{"agents":['
+  agent w1:p1 '"alpha"' /x/alpha claude idle; printf ,
+  agent w1:p2 null /x/beta claude done; printf ,
+  agent w1:p3 null /x/busy claude working; printf ,
+  agent w1:p4 null /x/ask claude blocked; printf ,
+  agent w1:p5 null /x/draft claude idle; printf ,
+  agent w1:p6 null /x/self claude idle; printf ,
+  agent w1:p7 null /x/codex codex idle; printf ,
+  agent w1:p8 null /x/odd claude unknown
+  printf ']}}\n'
+} >"$FAKE/agents"
+printf '⏺ done\n❯ \n  ⏵⏵ auto mode on\n' >"$FAKE/hscreen-w1:p1"
+printf '❯ Try "how does <filepath> work?"\n' >"$FAKE/hscreen-w1:p2"
+printf '❯ \n⏺ answer\n❯ half typed\n' >"$FAKE/hscreen-w1:p5"
+printf '❯ \n' >"$FAKE/hscreen-w1:p6"
+
+out=$(HERDR_PANE_ID=w1:p6 bash "$here/reload-all.sh")
+prompted=$(cat "$FAKE/prompted" 2>/dev/null)
+
+! grep -q 'No tmux or herdr server' <<<"$out"; check "herdr only: no 'no server' message" $?
+grep -qx 'w1:p1 /reload-plugins' <<<"$prompted"; check "herdr idle agent gets /reload-plugins" $?
+grep -qx 'w1:p2 /reload-plugins' <<<"$prompted"; check "herdr done agent with a hint counts as idle" $?
+for id in w1:p3 w1:p4 w1:p5 w1:p6 w1:p7 w1:p8; do
+  ! grep -q "^$id " <<<"$prompted"; check "no prompt sent to $id" $?
+done
+grep -q 'alpha (herdr w1:p1)' <<<"$out"; check "herdr agent shown by its name" $?
+grep -q 'busy (herdr w1:p3) — busy' <<<"$out"; check "herdr working is reported busy" $?
+grep -q 'ask (herdr w1:p4) — waiting on a question' <<<"$out"; check "herdr blocked is reported" $?
+grep -q 'draft (herdr w1:p5) — prompt not empty' <<<"$out"; check "herdr half-typed prompt is reported" $?
+grep -q 'self (herdr w1:p6) — this session' <<<"$out"; check "herdr own pane is reported" $?
+grep -q 'odd (herdr w1:p8) — state unknown' <<<"$out"; check "herdr unknown state is reported" $?
+! grep -q 'codex' <<<"$out"; check "non-Claude agent is not listed" $?
+grep -q 'reloaded: 2 · skipped: 5' <<<"$out"; check "herdr summary counts" $?
+rm -f "$FAKE/agents" "$FAKE/prompted"
+
+# tmux only
 tab=$'\t'
 {
   echo "%1${tab}idle:0.0${tab}2.1.302"

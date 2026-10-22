@@ -54,7 +54,7 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 - `/kit-update:all` refresh marketplace ทั้งหมด → อัปเดตทุก install ตาม scope ของมัน → สรุปว่าตัวไหนเปลี่ยนจาก version ไหนเป็นอะไร (diff จาก `plugin list --json` ก่อน-หลัง ไม่ได้เชื่อแค่ว่าคำสั่งตอบ ok)
 - `/kit-update:check-all-projects` และ `/kit-update:all-projects` ทำเหมือนกัน แต่รวม install ระดับ project/local ของ project อื่นด้วย (สองตัวแรกทำเฉพาะของ project ปัจจุบัน)
 - เสร็จแล้วพิมพ์ `/reload-plugins` เอง Claude สั่งแทนไม่ได้
-- `/kit-update:reload` พิมพ์ `/reload-plugins` ให้ทุก Claude session อื่นที่รันใน tmux และว่างอยู่ ข้าม session ที่กำลังทำงาน มีคำถามค้าง หรือพิมพ์ค้างไว้ (อ่านจากหน้าจอ ไม่แน่ใจก็ข้าม) session ที่สั่งต้องพิมพ์เอง ไม่ใช้ tmux ก็ทำอะไรไม่ได้
+- `/kit-update:reload` พิมพ์ `/reload-plugins` ให้ทุก Claude session อื่นที่รันใน tmux หรือ [herdr](https://herdr.dev) และว่างอยู่ ข้าม session ที่กำลังทำงาน มีคำถามค้าง หรือพิมพ์ค้างไว้ (tmux อ่านจากหน้าจอทั้งหมด herdr ใช้สถานะที่ herdr รู้ แล้วอ่านหน้าจอแค่ช่องพิมพ์ ไม่แน่ใจก็ข้าม) session ที่สั่งต้องพิมพ์เอง ไม่ได้ใช้ tmux หรือ herdr ก็ทำอะไรไม่ได้
 - command ทั้งห้าไม่รับ argument ข้อความที่พิมพ์ต่อท้ายไม่ถูกใส่ลงในคำสั่ง shell และ Claude ถูกสั่งให้ไม่ทำตาม ถ้าต้องใช้ flag อื่น (`--only '<regex>'`, `--scope user,project`, `--no-marketplaces`, `-y`) ให้รัน script ตรงจาก terminal
 - install ของ project ที่ไม่มีโฟลเดอร์แล้วจะถูกข้ามพร้อมบอกเหตุผล
 - ข้าม plugin ที่ไม่ได้มาจาก marketplace (`@synced`, `@inline`, `@skills-dir`) แล้วบอกรายชื่อไว้ท้ายสรุป

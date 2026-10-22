@@ -19,7 +19,7 @@ claude plugin test ./plugins/<name>       # runs every *.test.ts(x) under the fo
 claude --plugin-dir ./plugins/<name>      # start a session with the local copy loaded
 tsc -p ./plugins/<name>                   # type-check; only works after the engine has generated types (below)
 bash plugins/kit-update/scripts/update-all.sh --dry-run   # KIT_UPDATE_CLAUDE_BIN=<fake> to stub the claude CLI
-bash plugins/kit-update/scripts/reload-all.test.sh       # self-check for reload-all.sh against a fake tmux (KIT_UPDATE_TMUX_BIN)
+bash plugins/kit-update/scripts/reload-all.test.sh       # self-check for reload-all.sh against a fake tmux and herdr (KIT_UPDATE_TMUX_BIN, KIT_UPDATE_HERDR_BIN)
 ```
 
 ## Mod conventions
