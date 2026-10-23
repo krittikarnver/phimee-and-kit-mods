@@ -148,7 +148,8 @@ sf_path() { printf '%s\n' "$CFG/sessions/$1.json"; }
 sf_get() { jq -r ".$2 // empty" "$(sf_path "$1")" 2>/dev/null; }
 
 # The pid whose session file has sessionId SID, whose process is alive and started at
-# procStart (a stale file's pid may have been reused). Empty when none or more than one.
+# procStart (a stale file's pid may have been reused). Empty when none (status 1) or more
+# than one (status 2).
 pid_for_sid() {
   local f pid start hit=
   for f in "$CFG"/sessions/*.json; do
@@ -156,7 +157,7 @@ pid_for_sid() {
     [[ -n "$start" ]] || continue
     pid=${f##*/}; pid=${pid%.json}
     [[ "$(tr -s ' ' <<<"$start")" == "$(proc_field "$pid" start)" ]] || continue
-    [[ -n "$hit" ]] && return 1 # two live processes on one session
+    [[ -n "$hit" ]] && return 2 # two live processes on one session
     hit=$pid
   done
   [[ -n "$hit" ]] && echo "$hit"
@@ -256,13 +257,14 @@ activity_after() { # FILE OFFSET
 }
 
 # Run CMD in its own process group, so Ctrl-C or HUP sent to the worker's pane
-# can't cut it halfway (then nobody knows whether its keys arrived). Output goes
-# to $LOG. Returns CMD's exit status. Job control is on only while CMD starts:
-# left on, the foreground commands get their own group and Ctrl-C misses the worker's trap.
+# can't cut it halfway (then nobody knows whether its keys arrived). Its stderr goes
+# to $LOG; its stdout (herdr's JSON reply) nowhere. Returns CMD's exit status. Job
+# control is on only while CMD starts: left on, the foreground commands get their own
+# group and Ctrl-C misses the worker's trap.
 # wait's stderr is dropped: if CMD dies of a signal, bash prints "Terminated: 15 ..." there.
 run_detached() {
   local p
-  set -m; "$@" </dev/null >>"$LOG" 2>&1 & p=$!; set +m
+  set -m; "$@" </dev/null >/dev/null 2>>"$LOG" & p=$!; set +m
   while kill -0 "$p" 2>/dev/null; do wait "$p" 2>/dev/null; done # a trap cuts wait short: wait again
   wait "$p" 2>/dev/null # gone now; bash still has its exit status
 }

@@ -22,9 +22,10 @@
 # Skipped at the snapshot: a tmux pane that runs Claude through a wrapper, a herdr pane
 # whose shell is not an interactive bash or zsh (nothing to relaunch in), a herdr pane that
 # runs tmux (keys would land in whichever tmux pane is active; the tmux side covers it),
-# two live processes on one session, teammates of an agent team, and a session file that
-# is not interactive or lacks a field the worker checks. Sessions opened after the
-# snapshot are left alone. Nothing is written outside <config>/kit-update.
+# no live process on a session (one of another config dir) or two, teammates of an agent
+# team, and a session file that is not interactive or lacks a field the worker checks.
+# Sessions opened after the snapshot are left alone. Nothing is written outside
+# <config>/kit-update.
 #
 # Usage: restart-all.sh   (no options)
 # Exit code: 0, also when there is nothing to restart; 1 when the worker could not start.
@@ -93,11 +94,16 @@ tsv() {
 
 entry() { if [[ "$1" == tmux ]]; then echo "$4 (tmux $3)"; else echo "$4 (herdr $2)"; fi; } # MUX PANE LABEL NAME
 skip() { SKIPPED+=("$1 — $2"); }
+# Why session SID has no single live process, from pid_for_sid's status RC (2: more than one).
+no_pid() { # RC SID
+  if [[ "$1" == 2 ]]; then echo "not exactly one live process on session $2"
+  else echo "no live Claude Code process for session $2"; fi
+}
 print_skipped() { ((${#SKIPPED[@]})) && { echo "Skipped:"; printf '  - %s\n' "${SKIPPED[@]}"; }; }
 
 # Keep Claude PID's pane as a state row, or skip it with the reason.
 add() { # MUX PANE LABEL PID SHELL_PID AGENT_NAME FALLBACK_NAME
-  local k name args sid shown me=0
+  local k name args sid shown p rc me=0
   name=$(sf_get "$4" name)
   shown=$(entry "$1" "$2" "$3" "${name:-$7}")
   k=$(sf_get "$4" kind)
@@ -110,7 +116,8 @@ add() { # MUX PANE LABEL PID SHELL_PID AGENT_NAME FALLBACK_NAME
     *" --team-name"* | *" --agent-id"* | *" --parent-session-id"*) skip "$shown" "teammate of an agent team"; return ;;
   esac
   sid=$(sf_get "$4" sessionId)
-  [[ -n "$sid" && "$(pid_for_sid "$sid")" == "$4" ]] || { skip "$shown" "not exactly one live process on session ${sid:-?}"; return; }
+  p=$(pid_for_sid "$sid"); rc=$?
+  [[ -n "$sid" && "$p" == "$4" ]] || { skip "$shown" "$(no_pid "$rc" "${sid:-?}")"; return; }
   [[ "$ANC" == *" $4 "* ]] && me=1 issuer=1
   ROWS+=("$(tsv pane "$1" "$2" "$3" "$4" "$(sf_get "$4" procStart)" "$(proc_field "$4" tty)" "$5" "$sid" "$name" \
     "$(sf_get "$4" version)" "$(sf_get "$4" cwd)" "$me" "$6" "$args")")
@@ -171,7 +178,7 @@ if agents=$("$HERDR_BIN" agent list 2>/dev/null); then
     [[ -n "$id" ]] || continue
     shown=$(entry herdr "$id" "$label" "${aname:-$label}")
     [[ -n "$sid" ]] || { skip "$shown" "herdr shows no session id"; continue; }
-    pid=$(pid_for_sid "$sid") || { skip "$shown" "not exactly one live process on session $sid"; continue; }
+    pid=$(pid_for_sid "$sid") || { skip "$shown" "$(no_pid $? "$sid")"; continue; }
     if tmux_above "$pid"; then
       [[ "$SEEN" == *" $pid "* ]] || skip "$shown" "runs inside a tmux that was not listed"
       continue
@@ -215,7 +222,7 @@ cmd="bash $(printf %q "$here/restart-worker.sh") $(printf %q "$st")"
 (($(printf '%s' "$cmd" | wc -c) <= 1024)) || fail "its command line is over 1024 bytes"
 t=$(hhmmss "$(ku_now)")
 if [[ "$wmux" == herdr ]]; then
-  worker=$("$HERDR_BIN" workspace create --label "kit-update restart $t" --no-focus 2>/dev/null \
+  worker=$("$HERDR_BIN" workspace create --cwd "$KU_DIR" --label "kit-update restart $t" --no-focus 2>/dev/null \
     | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   [[ -n "$worker" ]] || fail "herdr workspace create failed"
   run_detached "$HERDR_BIN" pane run "$worker" "$cmd" || fail "herdr pane run failed"

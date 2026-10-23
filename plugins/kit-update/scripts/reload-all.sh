@@ -45,7 +45,7 @@ if panes=$("$TMUX_BIN" list-panes -a -F '#{pane_id}	#{session_name}:#{window_ind
       continue
     fi
 
-    screen=$("$TMUX_BIN" capture-pane -p -t "$id" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -15)
+    screen=$("$TMUX_BIN" capture-pane -p -e -t "$id" 2>/dev/null | screen_tail)
     case "$(screen_state "$screen")" in
       busy) skipped+=("$name — busy"); continue ;;
       question) skipped+=("$name — waiting on a question"); continue ;;
@@ -72,7 +72,7 @@ if agents=$("$HERDR_BIN" agent list 2>/dev/null); then
       *) skipped+=("$name — state $state"); continue ;;
     esac
 
-    screen=$("$HERDR_BIN" agent read "$id" --source visible 2>/dev/null | grep -v '^[[:space:]]*$' | tail -15)
+    screen=$("$HERDR_BIN" agent read "$id" --source visible --format ansi 2>/dev/null | screen_tail)
     if ! prompt_empty "$screen"; then
       skipped+=("$name — prompt not empty or not found")
       continue

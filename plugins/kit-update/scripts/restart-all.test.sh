@@ -21,7 +21,8 @@
 #   $FAKE/warp                            seconds each fake sleep moves the clock, whatever it is asked for
 #   $FAKE/hook-sleep                      sourced by the fake sleep after the clock moved ($now), with $FAKE/lib.sh
 #   $FAKE/lib.sh                          the test's helpers that hooks and react use (written by the worker section)
-#   $FAKE/screen-<pane>                   what capture-pane / agent read show (default: an empty ❯ prompt)
+#   $FAKE/screen-<pane>                   what capture-pane / agent read show (default: an empty ❯ prompt); its
+#                                         escape codes only with capture-pane -e / agent read --format ansi
 #   $FAKE/mode-<pane>, $FAKE/scroll-<pane>  #{pane_in_mode} / herdr scroll.offset_from_bottom (default 0)
 #   $FAKE/claude-<pane>                   the pid of the fake Claude in <pane>
 #   $FAKE/scenario-<pane>                 how it answers a request, one line per request (the last line stays)
@@ -89,7 +90,9 @@ case "$1" in
     if [[ "$*" == "send-keys -t $3 -l $5 ; send-keys -t $3 Enter" && -f "$FAKE/claude-$3" ]]; then
       . "$FAKE/lib.sh"; if [[ "$5" == /exit ]]; then fake_exit "$3"; else fake_run "$3" "$5"; fi
     fi ;;
-  capture-pane) cat "$FAKE/screen-$4" 2>/dev/null || echo '❯ ' ;;  # capture-pane -p -t PANE
+  capture-pane) # capture-pane -p [-e] -t PANE
+    s=$(cat "$FAKE/screen-${!#}" 2>/dev/null || echo '❯ ')
+    if [[ " $* " == *" -e "* ]]; then printf '%s\n' "$s"; else printf '%s\n' "$s" | sed $'s/\e\\[[0-9;:]*m//g'; fi ;;
   display-message) # display-message -p -t PANE FORMAT
     case $5 in
       '#{pane_dead}') cat "$FAKE/dead-$4" 2>/dev/null || echo 0 ;;
@@ -117,6 +120,7 @@ cat >"$FAKE/bin/herdr" <<'EOF'
 #!/bin/bash
 # fake herdr: calls logged to $FAKE/herdr-calls; no $FAKE/agents means no server
 echo "$*" >>"$FAKE/herdr-calls"
+case "$1 ${2:-}" in "agent prompt" | "agent rename" | "pane run") echo "{\"id\":\"cli:$1:$2\",\"result\":{}}" ;; esac # its reply, as herdr
 case "$1 ${2:-}" in
   "agent list") [[ -f "$FAKE/agents" ]] && cat "$FAKE/agents" ;;
   "workspace list") [[ -f "$FAKE/workspaces" ]] && cat "$FAKE/workspaces" ;;
@@ -141,7 +145,9 @@ case "$1 ${2:-}" in
       . "$FAKE/lib.sh"; fake_exit "$3"; ! life "$3" exit-fails
     fi ;;
   "agent rename") [[ "$4" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || { echo 'fake herdr: invalid_agent_name' >&2; exit 1; } ;;
-  "agent read") cat "$FAKE/screen-$3" 2>/dev/null || echo '❯ ' ;;
+  "agent read") # agent read PANE --source visible [--format ansi]
+    s=$(cat "$FAKE/screen-$3" 2>/dev/null || echo '❯ ')
+    if [[ "$*" == *"--format ansi"* ]]; then printf '%s\n' "$s"; else printf '%s\n' "$s" | sed $'s/\e\\[[0-9;:]*m//g'; fi ;;
   "pane get") printf '{"result":{"pane":{"scroll":{"offset_from_bottom":%s}}}}\n' "$(cat "$FAKE/scroll-$3" 2>/dev/null || echo 0)" ;;
 esac
 EOF
@@ -255,8 +261,8 @@ jq '.procStart = "Wed Oct  1 01:02:03 2026"' "$(sf_path 202)" >"$FAKE/s.json" &&
 [[ "$(pid_for_sid S1)" == 201 ]]; check "pid_for_sid picks the live, matching file" $?
 fake_proc 211 1 211 211 ttys005 claude; fake_session 211 S2 beta idle /x/beta
 fake_proc 212 1 212 212 ttys006 claude; fake_session 212 S2 beta idle /x/beta
-[[ -z "$(pid_for_sid S2)" ]]; check "pid_for_sid: two live matches is ambiguous" $?
-[[ -z "$(pid_for_sid S9)" ]]; check "pid_for_sid: no match is empty" $?
+o=$(pid_for_sid S2); [[ $? == 2 && -z "$o" ]]; check "pid_for_sid: two live matches is ambiguous (status 2)" $?
+o=$(pid_for_sid S9); [[ $? == 1 && -z "$o" ]]; check "pid_for_sid: no match is empty (status 1)" $?
 [[ "$(sf_get 201 name) $(sf_get 201 cwd) $(sf_get 201 kind)" == "alpha /x/alpha interactive" ]]; check "sf_get reads a field" $?
 [[ -z "$(sf_get 201 nothing)$(sf_get 999 name)" ]]; check "sf_get: missing field or file is empty" $?
 mkdir -p "$CFG/projects/-x-alpha"; : >"$CFG/projects/-x-alpha/S1.jsonl"
@@ -265,9 +271,10 @@ check "transcript_for finds the file by session id" $?
 
 # --- restart-lib: run_detached (runs real sh and ps, on this test's own children only)
 run_detached sh -c 'exit 3'; [[ $? == 3 ]]; check "run_detached returns the command's status" $?
-run_detached sh -c 'echo "pgid $(ps -o pgid= -p $$)"'
+run_detached sh -c 'echo "pgid $(ps -o pgid= -p $$)" >&2; echo "on stdout"'
 child=$(awk '$1 == "pgid" { print $2 }' "$LOG")
-[[ -n "$child" ]] && ((child != $(ps -o pgid= -p $$))); check "run_detached: own process group, output to the log" $?
+[[ -n "$child" ]] && ((child != $(ps -o pgid= -p $$))) && ! grep -q 'on stdout' "$LOG"
+check "run_detached: own process group, stderr to the log, stdout dropped" $?
 trap 'echo USR1 >>"$FAKE/trapped"' USR1 # the command signals this shell, then ends only once the trap has run
 run_detached sh -c 'sleep 0.1; kill -USR1 $PPID; n=0; until [ -s "$1" ] || [ $n -ge 200 ]; do sleep 0.05; n=$((n + 1)); done; exit 4' \
   sh "$FAKE/trapped" # 10 s at most
@@ -449,10 +456,12 @@ fake_proc 191 130 191 191 ttys012 'claude --name theta'; fake_session 191 S12 th
 fake_proc 200 1 200 0 '??' 'tmux -L other new' # w1:p6: inside a tmux server that is not listed
 fake_proc 201 200 201 202 ttys013 zsh
 fake_proc 202 201 202 202 ttys013 claude; fake_session 202 S13 iota idle /x/iota
+# w1:p7: session S14 has no session file here (a Claude of another config dir)
+fake_proc 220 130 220 220 ttys014 claude; fake_session 220 S20 kappa idle /x/kappa; sf_set 220 'del(.sessionId)' # %9
 agents "$(agent w1:p1 '"alpha"' w1 S1)" "$(agent w1:p2 null w2 S2)" "$(agent w1:p3 null w1 S3)" \
-  "$(agent w1:p4 null w1 S5)" "$(agent w1:p5 null w1 S7)" "$(agent w1:p6 null w1 S13)"
+  "$(agent w1:p4 null w1 S5)" "$(agent w1:p5 null w1 S7)" "$(agent w1:p6 null w1 S13)" "$(agent w1:p7 null w1 S14)"
 tpane %1 main:0.0 131; tpane %2 main:0.1 142; tpane %3 main:0.2 151; tpane %4 main:0.3 171
-tpane %5 main:1.0 181; tpane %6 main:1.1 182; tpane %7 main:1.2 183; tpane %8 main:2.0 191
+tpane %5 main:1.0 181; tpane %6 main:1.1 182; tpane %7 main:1.2 183; tpane %8 main:2.0 191; tpane %9 main:3.0 220
 
 out=$(HERDR_ENV=1 ra_as 102)
 [[ "$(row 101 | cut -f3)" == w1:p1 ]]; check "herdr: pid found through agent_session and session file" $?
@@ -463,6 +472,9 @@ check "tmux in herdr: kept once, on the tmux side" $?
 [[ -z "$(row 141)$(row 143)" ]] && grep -qx '  - delta (tmux main:0.1) — not exactly one live process on session S5' <<<"$out" \
   && grep -qx '  - alpha work (herdr w1:p4) — not exactly one live process on session S5' <<<"$out"
 check "two live processes share a sessionId: both skipped" $?
+grep -qx '  - alpha work (herdr w1:p7) — no live Claude Code process for session S14' <<<"$out" \
+  && grep -qx '  - kappa (tmux main:3.0) — no live Claude Code process for session ?' <<<"$out" && [[ -z "$(row 220)" ]]
+check "no live process on the session (herdr), or no session id (tmux): skipped, says so" $?
 [[ -z "$(row 151)" ]] && grep -q '(tmux main:0.2) — not interactive' <<<"$out"; check "kind not interactive: skipped" $?
 [[ -z "$(row 161)" ]] && grep -q '(herdr w1:p5) — .*status' <<<"$out"; check "session file missing status: skipped" $?
 [[ -z "$(row 172)" ]] && grep -q '(tmux main:0.3) — .*wrapper' <<<"$out"; check "tmux wrapper process: skipped" $?
@@ -485,10 +497,10 @@ t=$(date -r "$(cat "$FAKE/now")" +%H%M%S)
 line=$(cat "$FAKE/ran" 2>/dev/null); cmd=${line#w9:p1 }
 [[ "$(launches)" == 1 && "$line" == "w9:p1 "* && "$cmd" == "bash $here/restart-worker.sh $(state)" ]] \
   && (($(printf '%s' "$cmd" | wc -c) <= 1024)) && [[ -f "$(state)" && -f "$here/restart-worker.sh" ]] \
-  && grep -qxF "workspace create --label kit-update restart $t --no-focus" "$FAKE/herdr-calls" \
+  && grep -qxF "workspace create --cwd $KU_DIR --label kit-update restart $t --no-focus" "$FAKE/herdr-calls" \
   && [[ "$(sed -n 1,3p "$(state)")" == $'config\t'"$CFG"$'\nsocket\t\nmux\therdr' ]] \
-  && grep -qx 'Worker: w9:p1' <<<"$out" && ! grep -q new-session "$FAKE/tmux-calls"
-check "launch in herdr when HERDR_ENV is set" $?
+  && grep -qx 'Worker: w9:p1' <<<"$out" && ! grep -q new-session "$FAKE/tmux-calls" && ! grep -q '^{' "$LOG"
+check "launch in herdr when HERDR_ENV is set (herdr's JSON reply not in the log)" $?
 
 rm -rf "${LOCK:?}" "${FAKE:?}/ran"
 out=$(ra)
@@ -674,6 +686,24 @@ n=$(awk '{ print $2 }' "$FAKE/asked-%1" 2>/dev/null)
 grep -qxF "load-buffer -b kit-update-$n $LOCK/request-$n.txt ; paste-buffer -b kit-update-$n -p -d -t %1 ; send-keys -t %1 Enter" \
   "$FAKE/tmux-calls" && cmp -s "$FAKE/pasted-%1" <(printf '%s' "[kit-update restart $n]$REQ") && [[ -n "$(handoff alpha-_1)" ]]
 check "idle tmux pane: named buffer, paste -p, Enter in the same call" $?
+
+# Once a turn ends, Claude Code suggests a next prompt: dim text after ❯ (herdr --format ansi and tmux capture-pane -e
+# bytes below). It isn't typed: the pane stays sendable, so its answer is read and it goes on to /exit.
+printf '⏺ done\r\n❯\xc2\xa0\e[0m\e[2mคำรหัสของ session นี้คืออะไร\e[0m\r\n\e[0m\r\n' >"$FAKE/sugg-herdr"
+printf '⏺ done\n❯ \e[2mคำรหัสของ session นี้คืออะไร\e[0m\n' >"$FAKE/sugg-tmux"
+wworld; echo 600 >"$FAKE/warp"; wpane w1:p1 101 alpha; wpane %2 111 beta
+hook 'cp "$FAKE/sugg-herdr" "$FAKE/screen-w1:p1"; cp "$FAKE/sugg-tmux" "$FAKE/screen-%2"' # from the first nap: after the request
+rw
+[[ "$(asks w1:p1)" == 1 && -n "$(handoff alpha-w1_p1)" ]] && restarted 'alpha (herdr w1:p1)'
+check "herdr: dim suggestion in the prompt after the answer: handoff read, restarted" $?
+[[ "$(asks %2)" == 1 && -n "$(handoff beta-_2)" ]] && restarted 'beta (tmux main:0.2)'
+check "tmux: dim suggestion in the prompt after the answer: handoff read, restarted" $?
+wworld; echo 600 >"$FAKE/warp"; wpane w1:p1 101 alpha; wpane %2 111 beta
+printf '❯\xc2\xa0\e[38;5;2mแก้ต่อ\e[39m\r\n' >"$FAKE/screen-w1:p1"; printf '❯ \e[38;2;2;90;200mแก้ต่อ\e[39m\n' >"$FAKE/screen-%2"
+rw
+[[ "$(asks w1:p1) $(asks %2)" == '0 0' ]] && skipped 'alpha (herdr w1:p1)' 'prompt not empty or not found, gave up after 4 h' \
+  && skipped 'beta (tmux main:0.2)' 'prompt not empty or not found, gave up after 4 h'
+check "typed (not dim, colour 2) text in the prompt: never asked" $?
 
 held() { # LABEL PANE WHY HOOK: PANE takes no keys (the log says "waiting: WHY") until HOOK runs at T0+60, then is asked
   hook "((now == T0 + 60)) && { $4; }"
@@ -882,8 +912,9 @@ s=$(start_of alpha-w1_p1); argv w1:p1
     "$(at herdr 'agent rename w1:p1 alpha')" \
   && [[ "${#A[@]} ${A[*]:0:3}" == "4 claude --name alpha" && "${A[3]}" == "$(cat "$s")" ]] \
   && grep -qF "relaunch command: $(relaunch_of alpha alpha-w1_p1) (it was started as: claude)" "$LOG" \
-  && grep -qx 'Summary  restarted: 1 · skipped: 0' "$FAKE/wout" && restarted 'alpha (herdr w1:p1)' && [[ ! -e "$LOCK" ]]
-check "herdr full restart: handoff, /exit, relaunch, rename, Summary restarted" $?
+  && grep -qx 'Summary  restarted: 1 · skipped: 0' "$FAKE/wout" && restarted 'alpha (herdr w1:p1)' && [[ ! -e "$LOCK" ]] \
+  && ! grep -q '^{' "$LOG"
+check "herdr full restart: handoff, /exit, relaunch, rename, Summary restarted, no herdr JSON in the log" $?
 
 wworld; wpane w1:p1 101 alpha; scen w1:p1 hostile
 bad='งาน/ก'\''ข "ค" $x'; st_set 101 10 "$bad"

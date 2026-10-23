@@ -148,10 +148,10 @@ pane_sendable() {
       blocked) why "$i" "waiting on a question"; return 1 ;;
       *) why "$i" busy; return 1 ;;
     esac
-    s=$("$HERDR_BIN" agent read "$p" --source visible 2>/dev/null | grep -v '^[[:space:]]*$' | tail -15)
+    s=$("$HERDR_BIN" agent read "$p" --source visible --format ansi 2>/dev/null | screen_tail)
     prompt_empty "$s" || { why "$i" "prompt not empty or not found"; return 1; }
   else
-    s=$(tm capture-pane -p -t "$p" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -15)
+    s=$(tm capture-pane -p -e -t "$p" 2>/dev/null | screen_tail)
     case $(screen_state "$s") in
       busy) why "$i" busy; return 1 ;;
       question) why "$i" "waiting on a question"; return 1 ;;

@@ -66,6 +66,7 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
   - session ที่ตอบว่า `NOT-READY` หรือไม่ได้ handoff ที่ใช้ได้ จะไม่ถูกปิด
   - flag ที่ใช้ตอนเปิด session เดิม (เช่น `--model`, `--dangerously-skip-permissions`) ไม่ตามไปด้วย log มีคำสั่งเดิมไว้ให้ ถ้า session เปิดไม่ขึ้น log มีบรรทัด `relaunch it yourself: <คำสั่ง>`
   - shell ใน pane ต้องเป็น bash หรือ zsh (คำสั่งเปิดใหม่ใช้ quoting ของสองตัวนี้)
+  - Claude ใน herdr ต้องรันด้วย config ที่มี hook จาก `herdr integration install claude` (ลงไว้ใน `~/.claude/settings.json`) ไม่งั้น herdr ไม่รู้ session id และ session นั้นถูกข้ามด้วยเหตุผล `herdr shows no session id` เช่น Claude ที่เปิดด้วย `CLAUDE_CONFIG_DIR` อื่น
   - ถ้าสคริปต์บอกว่าไม่เจอ session ที่สั่ง หรือไม่มี tmux/herdr server ต้องปิดเปิดเอง
 - command ทั้งหกไม่รับ argument ข้อความที่พิมพ์ต่อท้ายไม่ถูกใส่ลงในคำสั่ง shell และ Claude ถูกสั่งให้ไม่ทำตาม ถ้าต้องใช้ flag อื่น (`--only '<regex>'`, `--scope user,project`, `--no-marketplaces`, `-y`) ให้รัน script ตรงจาก terminal
 - install ของ project ที่ไม่มีโฟลเดอร์แล้วจะถูกข้ามพร้อมบอกเหตุผล
