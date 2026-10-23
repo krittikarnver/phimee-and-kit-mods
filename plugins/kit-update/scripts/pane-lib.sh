@@ -7,12 +7,14 @@
 # in the input box, from typed text. The check is a reading of the UI: when unsure, callers skip the pane.
 
 # awk PROGRAM over stdin (bytes, LC_ALL=C), with two functions for it:
-#   esc(s)    s without escape codes: CSI (colours, dim, ...) and OSC (hyperlinks)
+#   esc(s)    s as plain text: without escape codes, CSI (colours, dim, ...) and OSC (hyperlinks), and
+#             with its no-break spaces as spaces (Claude Code puts one after ❯; [[:space:]] reads it as
+#             a space only in a UTF-8 locale, and a tmux server started without LANG has none)
 #   undim(s)  s without the text drawn dim (SGR 2, up to 0, 22 or a bare m); the parameters of
 #             a 38/48/58 colour are skipped, so a colour number 2 isn't taken for dim
 screen_awk() {
   LC_ALL=C awk '
-    function esc(s) { gsub(/\033\[[0-?]*[ -\/]*[@-~]|\033\][^\007\033]*(\007|\033\\)/, "", s); return s }
+    function esc(s) { gsub(/\033\[[0-?]*[ -\/]*[@-~]|\033\][^\007\033]*(\007|\033\\)/, "", s); gsub(/\302\240/, " ", s); return s }
     function undim(s,   out, dim, n, p, k, c) {
       while (match(s, /\033\[[0-9;:]*m/)) {
         if (!dim) out = out substr(s, 1, RSTART - 1)
@@ -31,12 +33,12 @@ screen_awk() {
   '"$1"
 }
 
-# The last 15 lines of the screen on stdin whose text isn't blank: a line of escape codes and spaces
-# only is blank, no-break spaces too (as grep [[:space:]] reads them in a UTF-8 locale).
-screen_tail() { screen_awk '{ t = esc($0); gsub(/\302\240/, " ", t) } t ~ /[^[:space:]]/' | tail -15; }
+# The last 15 lines of the screen on stdin whose text isn't blank (a line of escape codes and spaces only is blank).
+screen_tail() { screen_awk 'esc($0) ~ /[^[:space:]]/' | tail -15; }
 
-# The input box is the last ❯ line; empty, or showing only its "Try …" hint. Its dim text is a
-# suggestion, not typed, and is dropped there only: elsewhere on the screen, dim text counts.
+# The input box is the last line whose text starts with ❯ (tmux writes a colour code before it); empty,
+# or showing only its "Try …" hint. Its dim text is a suggestion, not typed, and is dropped there only:
+# elsewhere on the screen, dim text counts.
 prompt_empty() {
   screen_awk 'esc($0) ~ /^❯/ { l = $0 } END { print esc(undim(l)) }' <<<"$1" | grep -qE '^❯[[:space:]]*($|Try ")'
 }

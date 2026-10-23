@@ -690,17 +690,17 @@ check "idle tmux pane: named buffer, paste -p, Enter in the same call" $?
 # Once a turn ends, Claude Code suggests a next prompt: dim text after ❯ (herdr --format ansi and tmux capture-pane -e
 # bytes below). It isn't typed: the pane stays sendable, so its answer is read and it goes on to /exit.
 printf '⏺ done\r\n❯\xc2\xa0\e[0m\e[2mคำรหัสของ session นี้คืออะไร\e[0m\r\n\e[0m\r\n' >"$FAKE/sugg-herdr"
-printf '⏺ done\n❯ \e[2mคำรหัสของ session นี้คืออะไร\e[0m\n' >"$FAKE/sugg-tmux"
+printf '⏺ done\n\e[39m❯\xc2\xa0\e[2mคำรหัสของ session นี้คืออะไร\e[0m\n' >"$FAKE/sugg-tmux"
 wworld; echo 600 >"$FAKE/warp"; wpane w1:p1 101 alpha; wpane %2 111 beta
 hook 'cp "$FAKE/sugg-herdr" "$FAKE/screen-w1:p1"; cp "$FAKE/sugg-tmux" "$FAKE/screen-%2"' # from the first nap: after the request
-rw
+LC_ALL=C rw # as in a tmux server started without LANG: the no-break space after ❯ must still read as a space
 [[ "$(asks w1:p1)" == 1 && -n "$(handoff alpha-w1_p1)" ]] && restarted 'alpha (herdr w1:p1)'
 check "herdr: dim suggestion in the prompt after the answer: handoff read, restarted" $?
 [[ "$(asks %2)" == 1 && -n "$(handoff beta-_2)" ]] && restarted 'beta (tmux main:0.2)'
 check "tmux: dim suggestion in the prompt after the answer: handoff read, restarted" $?
 wworld; echo 600 >"$FAKE/warp"; wpane w1:p1 101 alpha; wpane %2 111 beta
-printf '❯\xc2\xa0\e[38;5;2mแก้ต่อ\e[39m\r\n' >"$FAKE/screen-w1:p1"; printf '❯ \e[38;2;2;90;200mแก้ต่อ\e[39m\n' >"$FAKE/screen-%2"
-rw
+printf '❯\xc2\xa0\e[38;5;2mแก้ต่อ\e[39m\r\n' >"$FAKE/screen-w1:p1"; printf '\e[39m❯\xc2\xa0\e[38;2;2;90;200mแก้ต่อ\e[39m\n' >"$FAKE/screen-%2"
+LC_ALL=C rw
 [[ "$(asks w1:p1) $(asks %2)" == '0 0' ]] && skipped 'alpha (herdr w1:p1)' 'prompt not empty or not found, gave up after 4 h' \
   && skipped 'beta (tmux main:0.2)' 'prompt not empty or not found, gave up after 4 h'
 check "typed (not dim, colour 2) text in the prompt: never asked" $?

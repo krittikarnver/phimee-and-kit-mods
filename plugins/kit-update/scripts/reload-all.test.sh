@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Self-check for reload-all.sh against a fake tmux and a fake herdr: which panes get keys, which are skipped.
+# Self-check for reload-all.sh against a fake tmux and a fake herdr: which panes get keys, which are skipped;
+# and for pane-lib.sh's prompt_empty on single input lines.
 # Run: bash plugins/kit-update/scripts/reload-all.test.sh
 
 set -uo pipefail
@@ -35,6 +36,26 @@ fails=0
 check() { # $1 = label, $2 = condition result
   if [[ "$2" == 0 ]]; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi
 }
+
+# pane-lib: prompt_empty, in this locale and in C (a tmux server started without LANG has no UTF-8 locale).
+# Claude Code 2.1.309's input line: tmux 3.8 capture-pane -e writes ESC[39m ❯ NBSP <typed>, herdr --format ansi
+# ❯ NBSP ESC[0m ESC[2m <suggestion> ESC[0m \r. The tmux suggestion is built the same way (none captured yet).
+source "$here/pane-lib.sh"
+pe() { # LABEL empty|draft LINE
+  local loc r
+  for loc in '' C; do
+    (if [[ -n "$loc" ]]; then export LC_ALL=$loc; fi; prompt_empty "$3"); r=$?
+    [[ ("$2" == empty && $r == 0) || ("$2" == draft && $r == 1) ]]; check "prompt_empty${loc:+ (LC_ALL=$loc)}: $1" $?
+  done
+}
+e=$'\e' nb=$'\xc2\xa0' sg='คำรหัสของ session นี้คืออะไร'
+pe "tmux empty line behind its colour code" empty "$e[39m❯$nb"
+pe "tmux typed line behind its colour code" draft "$e[39m❯${nb}abc"
+pe "tmux suggestion" empty "$e[39m❯$nb$e[2m$sg$e[0m"
+pe "herdr suggestion" empty "❯$nb$e[0m$e[2m$sg$e[0m"$'\r'
+pe "dim set by a combined 0;2" empty "$e[39m❯$nb$e[0;2m$sg$e[0m"
+pe "typed after 22 ends the dim" draft "$e[39m❯$nb$e[2m$sg$e[22mabc"
+pe "typed after a dim run" draft "$e[39m❯$nb$e[2m$sg$e[0m abc"
 
 # neither tmux nor herdr
 out=$(bash "$here/reload-all.sh")
@@ -111,11 +132,12 @@ printf ' Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel\n' >"$FA
 printf '❯ \n⏺ answer\n❯ half typed\n' >"$FAKE/screen-%5"
 printf '❯ \n' >"$FAKE/screen-%6"
 printf '❯ \n' >"$FAKE/screen-%7"
-printf '⏺ done\n❯ \e[2mคำรหัสของ session นี้คืออะไร\e[0m\n' >"$FAKE/screen-%8" # tmux -e bytes of a suggested prompt
-printf '❯ \e[38;2;2;90;200mhalf typed\e[39m\n' >"$FAKE/screen-%9"           # red 2 of a true colour is not dim
-printf '✻ Percolating… \e[2m(esc to \e[1minterrupt)\e[0m\n❯ \e[2mคำรหัส\e[0m\n' >"$FAKE/screen-%10" # dim busy line
+# tmux -e bytes of the input line: ESC[39m ❯ NBSP, then a suggested prompt (dim) or typed text
+printf '⏺ done\n\e[39m❯\xc2\xa0\e[2mคำรหัสของ session นี้คืออะไร\e[0m\n' >"$FAKE/screen-%8"
+printf '\e[39m❯\xc2\xa0\e[38;2;2;90;200mhalf typed\e[39m\n' >"$FAKE/screen-%9" # red 2 of a true colour is not dim
+printf '✻ Percolating… \e[2m(esc to \e[1minterrupt)\e[0m\n\e[39m❯\xc2\xa0\e[2mคำรหัส\e[0m\n' >"$FAKE/screen-%10" # dim busy line
 
-out=$(TMUX_PANE=%6 bash "$here/reload-all.sh")
+out=$(TMUX_PANE=%6 LC_ALL=C bash "$here/reload-all.sh") # C: as in a tmux server started without LANG
 sent=$(cat "$FAKE/sent" 2>/dev/null)
 
 grep -q -- '-t %1 -l /reload-plugins' <<<"$sent"; check "idle pane gets /reload-plugins" $?
