@@ -107,7 +107,7 @@ Claude Code อัปเดตบ่อย แต่ session ที่เปิ�
    - ถ้าไม่มี tmux หรือ herdr server ให้บอกว่าต้องปิดเปิดเองทีละ session แล้วปล่อย lock และจบ
    - พิมพ์บอกด้วยว่าเจอ session ที่เป็นคนสั่งใน snapshot หรือเปล่า
 3. **เปิด worker ใน pane ของตัวเอง** **(Claude เลือก: ไม่ใช้ `nohup` เพราะ worker ที่เป็นลูกของ Bash tool อาจตายไปพร้อม Claude ที่สั่ง)** ใช้ multiplexer เดียวกับ session ที่สั่ง (herdr ถ้ามี `HERDR_ENV` ไม่งั้น tmux ถ้ามี `TMUX` ไม่งั้นตัวที่มี server):
-   - herdr: `herdr workspace create --label "kit-update restart <HHMMSS>" --no-focus` แล้ว `pane run` ตัว worker ใน shell ของ pane นั้น
+   - herdr: `herdr workspace create --label "kit-update restart <HHMMSS>" --cwd <โฟลเดอร์ kit-update> --no-focus` แล้ว `pane run` ตัว worker ใน shell ของ pane นั้น
    - tmux: `tmux new-session -d -s kit-update-restart-<HHMMSS>` เสมอ ไม่เปิดเป็น window ใน session ของคนสั่ง เพราะ `cc` แบบ tmux อาศัยว่า session ปิดเองตอน Claude ออก window ของ worker ที่ค้างอยู่จะทำให้ session นั้นไม่ปิด รัน worker ผ่าน shell เพื่อให้ pane ไม่ปิดตอน worker จบ
    - ใส่เวลาในชื่อ เพราะ pane ของ worker รอบก่อนยังเปิดค้างอยู่ได้ (ชื่อซ้ำจะทำให้ `new-session` ล้ม)
    - คำสั่งที่เปิด worker ส่งแค่ token (worker อ่าน state จาก `restart.lock/state.<token>`) ไม่ส่งรายการ pane ทั้งหมด เพื่อให้สั้นกว่า 1024 byte ใส่ token ในชื่อไฟล์เพราะตัวที่แพ้แย่ง lock ค้างอาจเขียนลงโฟลเดอร์ lock ของตัวที่ชนะได้ หลังเขียน state ตัวเรียกตรวจ token ใน lock อีกครั้งก่อนเปิด worker ถ้าไม่ตรง ให้บอกว่าแพ้แย่ง lock แล้วจบโดยไม่เปิด worker
@@ -140,7 +140,7 @@ Claude Code อัปเดตบ่อย แต่ session ที่เปิ�
 
 1. **รอว่าง**: ทุกข้อต้องจริง
    - session file `status` เป็น `idle` (ค่าอื่นทั้งหมด เช่น `busy`, `shell` ถือว่าไม่ว่าง)
-   - เกณฑ์เดียวกับ reload (herdr: `idle` หรือ `done` และช่องพิมพ์ว่าง / tmux: อ่านจอแล้วไม่ busy ไม่มีคำถาม ช่องพิมพ์ว่าง)
+   - เกณฑ์เดียวกับ reload (herdr: `idle` หรือ `done` และช่องพิมพ์ว่าง / tmux: อ่านจอแล้วไม่ busy ไม่มีคำถาม ช่องพิมพ์ว่าง) ข้อความจางที่ Claude Code แนะนำไว้ในช่องพิมพ์ (prompt suggestion) นับเป็นช่องว่าง จึงอ่านจอแบบมีสี
    - ไม่มี process ลูกของ Claude ที่เป็น shell ของ background Bash หรือ Monitor ถ้ามี ให้รอต่อโดยไม่ต้องถาม
 2. **ขอ handoff**: พิมพ์ข้อความบรรทัดเดียวที่มีรหัสสุ่มของรอบนั้น (`<nonce>`) ประมาณนี้
 
@@ -279,6 +279,20 @@ Claude Code อัปเดตบ่อย แต่ session ที่เปิ�
 - `/exit` ใน `claude --worktree`, `/vim` NORMAL mode (เปลี่ยนค่าระดับเครื่อง จึงไม่ลอง), หน้าตา process ของ Monitor, แป้นตอน herdr pane กำลัง scroll (กฎ: รอไว้ก่อน)
 - teammate ของ agent team: `claude --help` ไม่มี flag ที่เกี่ยว กฎ v1 จากความจำที่ยังไม่ยืนยัน: ข้าม Claude ที่ args มี `--team-name`, `--agent-id` หรือ `--parent-session-id`
 
+## ผลการทดสอบกับของจริง (23 ต.ค. 2569, Claude Code 2.1.309, herdr 0.9.5, tmux 3.8)
+
+ใช้ `CLAUDE_CONFIG_DIR` ชั่วคราว, herdr workspace ทิ้ง และ tmux server แยก ปิดและลบหมดแล้ว
+
+- ผ่าน: restart 4 session ในรอบเดียว (herdr 2, tmux ที่ Claude เป็น process หลักของ pane 1 ผ่าน `respawn-pane` + `exec`, tmux ที่มี zsh 1 ผ่าน `send-keys`) จบในไม่ถึง 1 นาที ขอพร้อมกันไม่เกิน 2, `remain-on-exit` กลับเป็นไม่ได้ตั้ง, session ใหม่ทุกตัวได้ข้อความแรก `[kit-update restart] handoff ...` และจำเนื้อหาของ session เก่าได้, herdr ตั้งชื่อ agent คืนได้, `agent list` / `pane list` ยัง parse ได้หลังเปิดใหม่ด้วย argv หลายบรรทัด และ restart ซ้ำจาก session ที่เคย restart แล้วได้
+- ผ่าน: Ctrl-C ใน pane ของ worker หยุดใน 2 วินาที lock หาย pane ที่ยังไม่ได้ `/exit` ไม่ถูกแตะ
+- ผ่าน: session ที่ใช้ config อื่นถูกข้ามทั้งหมดโดยไม่พิมพ์อะไรลงไป
+- เจอและแก้แล้ว: หลังจบ turn Claude Code แสดง prompt suggestion เป็นข้อความจาง (SGR 2) หลัง `❯` อ่านจอแบบไม่มีสีแล้วเหมือนพิมพ์ค้าง worker จึงไม่อ่านคำตอบ และ `/kit-update:reload` ข้าม session พวกนี้ ตอนนี้อ่านจอแบบมีสี (`capture-pane -e` / `agent read --format ansi`) ไม่นับข้อความจางบนบรรทัด `❯` และนับ NBSP หลัง `❯` เป็นช่องว่างโดยไม่ขึ้นกับ locale
+- เจอและแก้แล้ว: JSON ที่ herdr ตอบกลับไปปนใน log, workspace ของ worker ใน herdr ไม่ได้ตั้ง cwd, เหตุผลตอนข้ามเมื่อไม่เจอ process ของ session
+- ข้อจำกัด: herdr รู้ session id จาก hook `SessionStart` ที่ `herdr integration install claude` ใส่ไว้ใน config Claude ที่ใช้ `CLAUDE_CONFIG_DIR` อื่นที่ไม่มี hook นี้ถูกข้ามด้วยเหตุผล `herdr shows no session id` (README บอกไว้)
+- ข้อสังเกต: ใน tmux ช่วงที่ Claude เพิ่งเปิด Enter ที่ส่งตามข้อความไม่ทำให้ส่ง ภายหลังส่งได้ปกติ worker ไม่ส่งอะไรตอน Claude เพิ่งเปิด จึงไม่กระทบ
+- ข้อสังเกต: บรรทัด `relaunch command` ใน log ต่อท้าย "it was started as" ด้วย argv ของรอบก่อน หลัง restart ไปแล้วหนึ่งครั้งจึงพก handoff ทั้งก้อนมาด้วย
+- วิธีทดสอบ: worker รันใน pane ของ herdr จึงไม่เห็น env ของตัวสั่ง (`KIT_UPDATE_TMUX_BIN` ไม่ตามไป) tmux server แยกต้องส่ง socket ผ่าน `TMUX=<socket path>,0,0` ตอนรัน `restart-all.sh` เพื่อให้ socket ลงไปใน state
+
 ## วิธีทดสอบ
 
 - `scripts/restart-all.test.sh` ใช้ fake tmux และ fake herdr แบบเดียวกับ `reload-all.test.sh` และให้ override ได้ด้วย env: ช่วงเวลาเช็ก, timeout, โฟลเดอร์ state, โฟลเดอร์ transcript, โฟลเดอร์ session file และตัวดู process **รวมถึงการเช็กว่า pid ยังอยู่** (ห้ามเรียก `kill -0` กับ pid จริงตรง ๆ) เพื่อไม่ให้ test แตะ `~/.claude` หรือ process จริง รันบน `/bin/bash` 3.2 กรณีที่ต้องมี:
@@ -349,4 +363,4 @@ Claude Code อัปเดตบ่อย แต่ session ที่เปิ�
   - pane ค้างใน copy mode หลังได้ handoff แล้ว: ไม่กั้น session ที่สั่ง และถูกข้ามเมื่อครบ 4 ชั่วโมง
   - ตัวเรียกอยู่ใน tmux ที่ใช้ socket อื่น แต่ worker เปิดใน herdr: worker ใช้ `tmux -S` กับ socket จาก state
   - `CLAUDE_CONFIG_DIR` ถูกตั้งไว้: อ่าน session file และ transcript จากโฟลเดอร์นั้น
-- ทดสอบกับ herdr จริงใน workspace ทิ้งที่สร้างขึ้นเอง กับ Claude จริงหนึ่งตัว แล้วปิด workspace นั้น
+- ทดสอบกับของจริงด้วย `CLAUDE_CONFIG_DIR` ชั่วคราว (ต้อง `/login` และใส่ hook `SessionStart` ของ herdr ลงใน `settings.json` ของมัน), herdr workspace ทิ้ง และ tmux server แยกที่ส่ง socket ผ่าน `TMUX` แล้วปิดทั้งหมด
