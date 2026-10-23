@@ -72,19 +72,15 @@ proc_children() {
 }
 
 # 0 when ARGS is bash or zsh (basename of argv[0], leading - of a login shell dropped)
-# with no c in any option group before the first operand (-c, -lc, -ic): a shell that
-# is still there to type into after Claude exits.
+# with options only, none of them holding a c (-c, -lc, -ic run a command; an operand is
+# a script): a shell that is still there to type into after Claude exits.
 shell_ok() {
-  local a w
+  local IFS=$' \t\n' a w
   read -ra a <<<"$1"
   w=${a[0]:-}; w=${w#-}; w=${w##*/}
   [[ "$w" == bash || "$w" == zsh ]] || return 1
   for w in "${a[@]:1}"; do
-    case "$w" in
-      -*c*) return 1 ;;
-      -*) ;;
-      *) break ;;
-    esac
+    [[ "$w" == -* && "$w" != *c* ]] || return 1
   done
   return 0
 }
@@ -97,6 +93,19 @@ bg_shells() {
     if [[ "$args" == */shell-snapshots/snapshot-* ]]; then echo "$pid"; fi
   done
 }
+
+# The token in $LOCK/owner, whose first line is "starting TOKEN" (restart-all.sh, before
+# the worker starts) or "TOKEN PID PANE" (the worker; a "cmd <its command line>" line follows).
+lock_token() {
+  local a= b=
+  read -r a b _ 2>/dev/null <"$LOCK/owner"
+  [[ "$a" == starting ]] && a=$b
+  [[ -n "$a" ]] && echo "$a"
+}
+
+# Remove $LOCK only while TOKEN owns it: a caller or worker that lost the lock must not
+# remove the winner's.
+lock_release() { [[ -n "$1" && "$(lock_token)" == "$1" ]] && rm -rf "${LOCK:?}"; }
 
 sf_path() { printf '%s\n' "$CFG/sessions/$1.json"; }
 sf_get() { jq -r ".$2 // empty" "$(sf_path "$1")" 2>/dev/null; }
