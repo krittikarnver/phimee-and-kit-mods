@@ -62,7 +62,7 @@ docs/superpowers/specs/2026-10-22-kit-update-restart-design.md                  
 **Interfaces:**
 - Produces: กฎที่ Task 3 ใช้ใน `bg_shells` (หน้าตา args ของ shell ที่ background Bash/Monitor ใช้ เทียบกับ MCP server), กฎแยก teammate ของ agent team ที่ Task 5 ใช้, ผลว่า `CLAUDE_CONFIG_DIR` ชั่วคราวต้อง `/login` ไหม (Task 9 ใช้)
 
-- [ ] **Step 1: กลุ่ม Claude Code** เปิด `claude --name spike` ใน pane ทิ้ง แล้วบันทึก:
+- [x] **Step 1: กลุ่ม Claude Code** เปิด `claude --name spike` ใน pane ทิ้ง แล้วบันทึก:
   - `claude --name spike "$(cat <ไฟล์หลายบรรทัด ~3KB>)"` ขึ้นแบบ interactive และส่งข้อความแรกจริง
   - ข้อความภาษาไทยบรรทัดเดียวที่ส่งผ่าน `herdr agent prompt` และผ่าน `tmux -L kit-spike load-buffer -b x <file> \; paste-buffer -b x -p -d \; send-keys Enter` เข้าเป็นข้อความเดียว และใน transcript เป็น `type:"user"` ข้อความเต็ม (ไม่ใช่ `[Pasted text #1]`)
   - ข้อความที่พิมพ์ระหว่าง Claude ทำงานอยู่ถูกบันทึกเป็น `queued_command` `commandMode:"prompt"`
@@ -72,16 +72,16 @@ docs/superpowers/specs/2026-10-22-kit-update-restart-design.md                  
   - args ของ process ลูกของ Claude ตอนรัน `sleep 300` เป็น background Bash, ตอนเปิด Monitor และ MCP server (`ps -A -o pid=,ppid=,args=`)
   - ถ้าเปิด agent team ได้ในเวลาไม่เกิน 10 นาที: args และ `kind` ของ teammate ถ้าไม่ได้ บันทึกว่าไม่ได้ตรวจ
   - `CLAUDE_CONFIG_DIR=$(mktemp -d) claude` ใช้ได้เลยหรือต้อง `/login`
-- [ ] **Step 2: กลุ่มโมเดล** ใน session ทิ้งเดียวกัน ส่งข้อความขอ handoff ตรงตัวตาม spec §3 ขั้น 2 ในสามสภาพ: (ก) ว่างและไม่มีคำถามค้าง (ข) หลัง Claude ถามคำถามแล้วยังไม่ตอบ จากนั้นมี task notification เข้ามาหนึ่งครั้ง แล้วถามซ้ำ (ค) มี `sleep 300` เป็น background Bash ค้าง บันทึกว่าได้ handoff หรือ `NOT-READY` และ Claude เรียก tool หรือเปล่า
-- [ ] **Step 3: กลุ่ม terminal/tmux/herdr**
+- [x] **Step 2: กลุ่มโมเดล** ใน session ทิ้งเดียวกัน ส่งข้อความขอ handoff ตรงตัวตาม spec §3 ขั้น 2 ในสามสภาพ: (ก) ว่างและไม่มีคำถามค้าง (ข) หลัง Claude ถามคำถามแล้วยังไม่ตอบ จากนั้นมี task notification เข้ามาหนึ่งครั้ง แล้วถามซ้ำ (ค) มี `sleep 300` เป็น background Bash ค้าง บันทึกว่าได้ handoff หรือ `NOT-READY` และ Claude เรียก tool หรือเปล่า
+- [x] **Step 3: กลุ่ม terminal/tmux/herdr**
   - ใน pane ทิ้งที่มี tty: script ที่ทำ `set -m; sleep 30 </dev/null & p=$!; set +m` แล้ว `trap 'echo INT' INT; sleep 30` กด Ctrl-C: trap ต้องทำงาน และ pgid ของ `$p` ต่างจาก worker
   - ปิด herdr pane และ `tmux kill-pane` ส่งแค่ `HUP` หรือมี `SIGKILL` ตามมา (script ที่ `trap 'echo HUP >>f; sleep 5; echo alive >>f' HUP`)
   - `tmux -L kit-spike`: `set-option -p remain-on-exit on`, `set-option -pu`, `show-options -p -v remain-on-exit` ตอนไม่ได้ตั้ง, `respawn-pane -t P -c '<dir มีช่องว่าง>' /bin/sh -c 'exec env' sh a b` (แบบ argv), `#{pane_in_mode}` ตอนอยู่ใน copy mode, `#{pane_dead}`
   - herdr: `pane run` ปฏิเสธบรรทัดเกิน 1024 byte, รูปแบบชื่อของ `agent rename --help`, แป้นจาก `agent prompt` ตอน pane กำลัง scroll อยู่ไปที่ไหน, shell ได้ terminal คืนหลัง Claude ออกช้าแค่ไหน
   - tmux ที่รันใน herdr pane: เจอ `tmux` ใน process ที่เป็นบรรพบุรุษของ Claude
-- [ ] **Step 4: บันทึกผล** ทุกข้อเป็นหนึ่งบรรทัด: ผล, หลักฐาน (คำสั่งที่รัน), ผลต่อ design แก้ข้อความใน spec ที่ผิดด้วย ห้ามใส่ชื่อโปรเจกต์หรือ path จริงของเครื่อง (`grep -niE '/Users/|<ชื่อโปรเจกต์>' spec` ต้องไม่เจอ)
-- [ ] **Step 5: จุดหยุด** ถ้าข้อไหนต่อไปนี้ผิดจากที่ spec สมมติ ให้หยุดแล้วรายงานกิตพร้อมข้อเสนอแก้ spec ห้ามทำ Task 2 ต่อ: ข้อความแรกจาก `claude --name ... "$(cat f)"`, transcript เก็บข้อความเต็ม, `/exit` ออกจริงและ session file หาย, trap ของ Ctrl-C, `queued_command`, `statusUpdatedAt` นิ่งตอน idle, แยก shell ของ background Bash ได้, โมเดลตอบ `NOT-READY` ถูกในสภาพ (ข) และ (ค)
-- [ ] **Step 6: ปิดของทิ้งทั้งหมด** (`herdr workspace close`, `tmux -L kit-spike kill-server`, ลบโฟลเดอร์ชั่วคราว) แล้ว commit
+- [x] **Step 4: บันทึกผล** ทุกข้อเป็นหนึ่งบรรทัด: ผล, หลักฐาน (คำสั่งที่รัน), ผลต่อ design แก้ข้อความใน spec ที่ผิดด้วย ห้ามใส่ชื่อโปรเจกต์หรือ path จริงของเครื่อง (`grep -niE '/Users/|<ชื่อโปรเจกต์>' spec` ต้องไม่เจอ)
+- [x] **Step 5: จุดหยุด** ถ้าข้อไหนต่อไปนี้ผิดจากที่ spec สมมติ ให้หยุดแล้วรายงานกิตพร้อมข้อเสนอแก้ spec ห้ามทำ Task 2 ต่อ: ข้อความแรกจาก `claude --name ... "$(cat f)"`, transcript เก็บข้อความเต็ม, `/exit` ออกจริงและ session file หาย, trap ของ Ctrl-C, `queued_command`, `statusUpdatedAt` นิ่งตอน idle, แยก shell ของ background Bash ได้, โมเดลตอบ `NOT-READY` ถูกในสภาพ (ข) และ (ค)
+- [x] **Step 6: ปิดของทิ้งทั้งหมด** (`herdr workspace close`, `tmux -L kit-spike kill-server`, ลบโฟลเดอร์ชั่วคราว) แล้ว commit
 
 ```bash
 git add docs/superpowers/specs/2026-10-22-kit-update-restart-design.md
@@ -120,11 +120,11 @@ git commit -m "kit-update: spike results for restart"
   - ตัวแปรจาก `ku_paths`: `CFG`, `KU_DIR=$CFG/kit-update`, `LOCK=$KU_DIR/restart.lock`, `LOG=$KU_DIR/restart.log`, `HANDOFFS=$KU_DIR/handoffs`, `TMUX_BIN`, `HERDR_BIN`, `PS_BIN`
   - `ku_now` → epoch วินาที (`$KIT_UPDATE_CLOCK_BIN` หรือ `date +%s`), `ku_nap N` (`$KIT_UPDATE_SLEEP_BIN N` หรือ `sleep N`)
   - `ku_log LABEL MESSAGE` → ต่อท้าย `$LOG` และ echo บรรทัด `YYYY-MM-DD HH:MM:SS  LABEL — MESSAGE`
-  - `proc_row PID` → `PID PPID PGID TPGID TTY <lstart 5 คำ> ARGS` จาก `LC_ALL=C $PS_BIN -o pid=,ppid=,pgid=,tpgid=,tty=,lstart=,args= -p PID` คืน 1 ถ้าไม่มี pid นั้น
+  - `proc_row PID` → `PID PPID PGID TPGID TTY <lstart 5 คำ> ARGS` จาก `TZ=UTC LC_ALL=C $PS_BIN -o pid=,ppid=,pgid=,tpgid=,tty=,lstart=,args= -p PID` คืน 1 ถ้าไม่มี pid นั้น (`TZ=UTC` เพราะ `procStart` ใน session file เป็น UTC ผล spike)
   - `proc_field PID ppid|pgid|tpgid|tty|start|args` (`start` = lstart ที่ยุบช่องว่างแล้ว), `proc_alive PID`, `proc_foreground PID` (pgid = tpgid)
   - `proc_children PID` → บรรทัด `PID ARGS` ของลูกโดยตรง จาก `$PS_BIN -A -o pid=,ppid=,args=`
   - `shell_ok ARGS` → 0 เมื่อ basename ของ argv[0] (ตัด `-` นำหน้า) เป็น `bash` หรือ `zsh` และไม่มีกลุ่ม option ก่อน operand ตัวแรกที่มี `c`
-  - `bg_shells PID` → echo pid ของลูกที่เป็น shell ของ background Bash หรือ Monitor (กฎจาก Task 1)
+  - `bg_shells PID` → echo pid ของลูกโดยตรงที่ args มี `/shell-snapshots/snapshot-` (shell ของ background Bash ตามผล spike MCP server อย่าง `npm exec ...` ไม่นับ)
   - `sf_path PID` = `$CFG/sessions/PID.json`, `sf_get PID FIELD` → `jq -r ".FIELD // empty"`
   - `pid_for_sid SID` → pid ของ session file ที่ `sessionId` ตรง, process ยังอยู่ และ `procStart` (ยุบช่องว่าง) = `proc_field start` ถ้าได้มากกว่าหนึ่งหรือไม่ได้เลย echo ว่าง
   - `transcript_for SID` → path แรกที่ตรง `$CFG/projects/*/SID.jsonl` หรือว่าง
@@ -147,6 +147,8 @@ for a in 'bash -lc x' 'zsh -ic x' 'zsh -c x' 'sh -c x' 'fish' '/bin/sh'; do ! sh
 # pid_for_sid: ไฟล์ค้างของ pid ที่ตาย + ไฟล์ของ pid ที่ procStart ไม่ตรง + ไฟล์ที่ถูกต้องหนึ่งไฟล์
 [[ "$(pid_for_sid S1)" == 201 ]]; check "pid_for_sid picks the live, matching file" $?
 [[ -z "$(pid_for_sid S2)" ]]; check "pid_for_sid: two live matches is ambiguous" $?
+fake_proc 301 101 301 101 ttys001 "/bin/zsh -c source $CFG/shell-snapshots/snapshot-zsh-1-x.sh && eval 'sleep 300'"
+fake_proc 302 101 101 101 ttys001 "npm exec @playwright/mcp@latest"
 [[ "$(bg_shells 101)" == 301 ]]; check "bg_shells finds the Bash shell, not the MCP server" $?
 run_detached sh -c 'exit 3'; [[ $? == 3 ]]; check "run_detached returns the command's status" $?
 ```
@@ -170,7 +172,7 @@ run_detached sh -c 'exit 3'; [[ $? == 3 ]]; check "run_detached returns the comm
   - `activity_after FILE OFFSET` → 0 ถ้าหลัง OFFSET มี prompt entry หรือ entry ของ Claude
   - `is_prompt` ของ jq (ใช้ร่วมกันสองฟังก์ชัน): `type=="user"` ที่ content เป็น string และไม่ใช่ `isMeta` หรือ `type=="attachment"` ที่ `attachment.type=="queued_command"` (ข้อความอยู่ที่ `attachment.prompt`)
 - อ่านด้วย `tail -c +$((OFFSET+1)) FILE | jq -R 'fromjson?'` เท่านั้น ห้ามอ่านทั้งไฟล์ กฎของ verdict ตาม spec §3 ขั้น 3 ไล่ตามลำดับนี้:
-  1. ไม่มี prompt entry ที่ขึ้นต้นด้วย `[kit-update restart NONCE]` → `no-nonce` ถ้า nonce entry เป็น `queued_command` → `stale`
+  1. ไม่มี prompt entry ที่ขึ้นต้นด้วย `[kit-update restart NONCE]` หลังตัดส่วนนำหน้า `^\s*<pasted_content id="[^"]*">\s*` ออก (ถ้ามี) → `no-nonce` ถ้า nonce entry เป็น `queued_command` → `stale`
   2. prompt entry หลัง nonce entry → `stale` ยกเว้น `queued_command` ที่ `commandMode=="task-notification"` ซึ่งอยู่ก่อน entry แรกของ Claude
   3. entry ของ Claude ที่มี `tool_use` หรือ `stop_reason=="tool_use"` ก่อนคำตอบจบ → `invalid` (`tool call`)
   4. `stop_reason` null หรือ `type:"user"` ที่ content เป็น array และมี text `[Request interrupted by user` → `stale`
@@ -180,6 +182,8 @@ run_detached sh -c 'exit 3'; [[ $? == 3 ]]; check "run_detached returns the comm
 
 - [ ] **Step 1: เขียน test ที่ล้ม** เพิ่ม helper สร้างบรรทัด jsonl: `j_prompt TEXT`, `j_queued MODE TEXT`, `j_asst ID STOP KIND TEXT` (KIND = `text`/`thinking`/`tool_use`), `j_synthetic`, `j_interrupt`, `j_routine` (ออก `system`, `attachment` แบบ `total_tokens_reminder`, `file-history-snapshot`, `last-prompt`, `custom-title`) แล้วกรณี (label = ผลที่ต้องได้):
   - `handoff: thinking + text of one message` (สอง entry `message.id` เดียวกัน `end_turn` ทั้งคู่) → `handoff` และ OUT มี text ของ entry ที่สอง
+  - `handoff: nonce entry wrapped in pasted_content` (content = `"\n\n<pasted_content id=\"5444\">\n[kit-update restart N] ..."`) → `handoff`
+  - `stale: task notification as a user string after the answer` (`j_prompt '<task-notification>...'`) → `stale`
   - `handoff: routine entries after are ignored` → `handoff`
   - `handoff: start-of-session task notifications before the answer` (`j_queued task-notification` สองตัวหลัง nonce) → `handoff`
   - `not-ready: plain / ** / backtick / leading spaces` สี่แบบ → `not-ready` และ DETAIL = `bg job`
@@ -218,7 +222,7 @@ run_detached sh -c 'exit 3'; [[ $? == 3 ]]; check "run_detached returns the comm
 - [ ] **Step 1: เขียน test ที่ล้ม** ขยาย fake tmux/herdr ของ `reload-all.test.sh` ให้รู้จัก `list-panes` แบบใหม่, `display -p`, `new-session`, `workspace create` (คืน json ที่มี `.result.root_pane.pane_id`), `pane run` (บันทึกลง `$FAKE/ran`) แล้วกรณี:
   - `no server: says so, no lock left`
   - `herdr: pid found through agent_session and session file` / `herdr: parent shell zsh -ic is skipped` / `herdr: login shell -zsh is kept`
-  - `tmux in herdr: kept once, on the tmux side` / `two live processes share a sessionId: both skipped` / `kind not interactive: skipped` / `session file missing status: skipped` / `tmux wrapper process: skipped` / `teammate: skipped` (กฎจาก Task 1)
+  - `tmux in herdr: kept once, on the tmux side` / `two live processes share a sessionId: both skipped` / `kind not interactive: skipped` / `session file missing status: skipped` / `tmux wrapper process: skipped` / `teammate: skipped` (args มี `--team-name`, `--agent-id` หรือ `--parent-session-id` ตามผล spike ซึ่งยังไม่ยืนยัน)
   - `issuer found through the ppid chain` / `issuer not in snapshot: says so`
   - `launch in herdr when HERDR_ENV is set` (ตรวจ label, `pane run` ได้คำสั่งที่ `<= 1024` byte และชี้ state ที่มีอยู่จริง) / `launch in tmux when only TMUX is set` (ตรวจ `new-session -d -s kit-update-restart-` และ socket ใน state) / `neither HERDR_ENV nor TMUX: uses the multiplexer that has a server` / `herdr agent with tmux ancestor not in the tmux list: still dropped`
   - lock: `running worker: reports its pane, no second launch` / `fresh starting lock: no launch` / `empty lock dir under 60s: no launch` / `dead worker pid: takes over` / `starting older than 60s: takes over` / `two callers on a stale lock: exactly one launch, the winner's lock survives` (รันสองตัวพร้อมกันด้วย `&` แล้วตรวจว่า `lock_token` = token ใน state ที่ถูกเปิด) / `lost the lock after writing state: no launch` / `launch fails: lock removed`
@@ -244,8 +248,8 @@ run_detached sh -c 'exit 3'; [[ $? == 3 ]]; check "run_detached returns the comm
   - array ต่อ pane (index ตรงกับแถวใน state): ค่าจาก state + `PH` (phase), `NONCE`, `OFF`, `BASE_OFF`, `BASE_SUA`, `ASKED`, `NEXT_ASK`, `FAILS`, `WHY` (เหตุผลล่าสุดที่ยังไม่พร้อม ใช้ตอนข้ามที่เพดาน), `HANDOFF` (path ไฟล์)
   - phase: `wait` → `asked` → (`notready` → `wait`) | `ready` | `wait` (ตกรุ่น/ไม่ผ่าน) และสถานะจบ `skipped:<reason>` / `gone` / `done` ในขั้นนี้ `ready` จบเป็น `skipped:exit not implemented` ชั่วคราว (Task 7 แทน)
   - `identity_ok i` → 0/1/2 (ผ่าน / gone / แค่ไม่อยู่หน้าสุด) ตาม spec §3 "ตรวจตัวตน" (pid, `procStart`, tty, pane ยังอยู่, หน้าสุด)
-  - `pane_sendable i` → 0 เมื่อ session file `status=="idle"`, จอว่าง (herdr: `idle`/`done` + `prompt_empty`; tmux: `screen_state` เป็น `idle`), tmux `#{pane_in_mode}` เป็น `0` และ `bg_shells` ว่าง
-  - `send_request i` → จด `OFF` (ขนาด transcript หรือ `0` ถ้ายังไม่มีไฟล์) ก่อน เขียนข้อความขอ handoff ลง `$LOCK/request-<nonce>.txt` (หายไปพร้อม lock) แล้วส่ง (herdr: `agent prompt <pane> <text>` ไม่มี `--wait`; tmux: `load-buffer -b kit-update-<nonce> <file> \; paste-buffer -b kit-update-<nonce> -p -d -t <pane> \; send-keys -t <pane> Enter`) ผ่าน `run_detached` ไม่ดูผลของคำสั่ง
+  - `pane_sendable i` → 0 เมื่อ session file `status=="idle"`, จอว่าง (herdr: `idle`/`done` + `prompt_empty`; tmux: `screen_state` เป็น `idle`), ไม่ได้ scroll อยู่ (tmux `#{pane_in_mode}` เป็น `0`; herdr `pane get` `.result.pane.scroll.offset_from_bottom` เป็น `0`) และ `bg_shells` ว่าง ห้ามใช้ `herdr pane process-info` (คืน JSON เสียเมื่อ cmdline มีขึ้นบรรทัดใหม่)
+  - `send_request i` → จด `OFF` (ขนาด transcript หรือ `0` ถ้ายังไม่มีไฟล์) ก่อน เขียนข้อความขอ handoff ลง `$LOCK/request-<nonce>.txt` ด้วย `printf '%s'` (ไม่มี `\n` ท้าย, หายไปพร้อม lock) แล้วส่ง (herdr: `agent prompt <pane> <text>` ไม่มี `--wait`; tmux: `load-buffer -b kit-update-<nonce> <file> \; paste-buffer -b kit-update-<nonce> -p -d -t <pane> \; send-keys -t <pane> Enter`) ผ่าน `run_detached` ไม่ดูผลของคำสั่ง
   - nonce = 16 ตัว hex จาก `/dev/urandom` (`od -An -tx1`)
   - log ต่อ pane ผ่าน `ku_log <LABEL>` และตอนจบ `Summary  restarted: N · skipped: M` + รายการแบบ `reload-all.sh`
 - กติกาการจัดคิวตาม spec §3: ช่อง 2 ช่องนับเฉพาะ pane ใน `asked`, pane ที่ `pane_sendable` ผ่านแต่ไม่ได้ช่องถือว่า "รอช่อง" ในรอบนั้น, issuer ส่งคำขอได้เมื่อไม่มี pane อื่นใน `asked`, ไม่มี pane อื่นรอช่อง และไม่มี pane อื่นที่ส่ง `/exit` แล้วแต่ยังไม่จบ (Task 7 เพิ่ม phase พวกนั้น), เพดานของ issuer นับจากรอบแรกที่เงื่อนไขนี้เป็นจริง
@@ -256,7 +260,7 @@ run_detached sh -c 'exit 3'; [[ $? == 3 ]]; check "run_detached returns the comm
   - `idle herdr pane: request sent, handoff file written` (ตรวจข้อความตรงกับ spec §3 ขั้น 2 ทุกตัวอักษรหลัง nonce และชื่อไฟล์ตามรูปแบบ)
   - `idle tmux pane: named buffer, paste -p, Enter in the same call`
   - `busy then idle: asked only after idle` / `blocked until the cap: skipped, no keys` / `background shell child: waits without asking`
-  - `suspended (pgid != tpgid) with ❯ screen: no keys` / `tmux copy mode: no keys until it leaves, then asked`
+  - `suspended (pgid != tpgid) with ❯ screen: no keys` / `tmux copy mode: no keys until it leaves, then asked` / `herdr pane scrolled up: no keys until back at the bottom` / `status shell (background shell): waits without asking`
   - `token mismatch: worker exits without touching panes`
   - `pid reused (procStart differs): gone` / `tty differs: gone` / `herdr pane vanished: gone`
   - `not-ready: no re-ask before activity and 30 min` (activity ที่ 5 นาที → ถามใหม่ที่ 30 นาที ไม่ใช่ 5) / `not-ready: reason is in the log` / `not-ready then /clear: new sessionId counts as activity` / `activity of another session in the same folder does not count`
@@ -336,7 +340,7 @@ run_detached sh -c 'exit 3'; [[ $? == 3 ]]; check "run_detached returns the comm
 
 ### Task 9: ทดสอบกับของจริง (ทำใน main session ขอกิตก่อนเริ่ม)
 
-แยกจาก session จริงของกิตด้วย `CLAUDE_CONFIG_DIR` ชั่วคราว (snapshot จะหา session file ของ session จริงไม่เจอแล้วข้ามทุกตัวโดยไม่พิมพ์อะไรลงไป) และ tmux socket แยก (`KIT_UPDATE_TMUX_BIN` ชี้ไป wrapper `exec tmux -L kit-e2e "$@"`) ถ้า Task 1 บอกว่าต้อง `/login` ให้กิตทำเองใน pane ทิ้ง
+แยกจาก session จริงของกิตด้วย `CLAUDE_CONFIG_DIR` ชั่วคราว (snapshot จะหา session file ของ session จริงไม่เจอแล้วข้ามทุกตัวโดยไม่พิมพ์อะไรลงไป) และ tmux socket แยก (`KIT_UPDATE_TMUX_BIN` ชี้ไป wrapper `exec tmux -L kit-e2e "$@"`) Task 1 ยืนยันแล้วว่า config ชั่วคราวต้อง `/login` ให้กิตทำเองใน pane ทิ้งหนึ่งครั้ง (เปิดครั้งแรกในโฟลเดอร์ใหม่จะมี dialog trust folder ที่ค่าเริ่มเป็น `No, exit` ด้วย ให้กิตกดเอง)
 
 - [ ] **Step 1: herdr** สร้าง workspace ทิ้ง เปิด `CLAUDE_CONFIG_DIR=<tmp> claude --name e2e` คุยสั้น ๆ หนึ่งรอบ แล้วรัน `CLAUDE_CONFIG_DIR=<tmp> bash plugins/kit-update/scripts/restart-all.sh` จาก shell อีก pane Expected: output บอก 1 session จะ restart, session จริงของกิตอยู่ใน Skipped ทั้งหมด, ภายในไม่กี่นาทีได้ไฟล์ handoff, pane เดิมขึ้น Claude ใหม่ชื่อ `e2e` ที่ข้อความแรกขึ้นต้น `[kit-update restart]` และสรุปแล้วรอ, `Summary restarted: 1`
 - [ ] **Step 2: tmux** ทำแบบเดียวกันใน `tmux -L kit-e2e new -s e2e "claude --name e2e"` (แบบ `cc` ที่ Claude เป็น process หลัก) Expected: `respawn-pane` ทำงาน, `remain-on-exit` ของ pane กลับไปไม่ได้ตั้งค่า
