@@ -58,9 +58,11 @@ proc_field() {
 proc_alive() { proc_row "$1" >/dev/null; }
 
 # Its process group owns the terminal (pgid = tpgid): not suspended or in the background.
+# Both come from one ps row, so they describe the same moment.
 proc_foreground() {
-  local g t
-  g=$(proc_field "$1" pgid) && t=$(proc_field "$1" tpgid) && [[ "$g" == "$t" ]]
+  local p pp g t
+  read -r p pp g t _ <<<"$(proc_row "$1")"
+  [[ -n "$g" && "$g" == "$t" ]]
 }
 
 # "PID ARGS" for each direct child of PID.

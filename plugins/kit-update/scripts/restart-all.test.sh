@@ -17,6 +17,16 @@
 #   $FAKE/hook-<cmd>                      sourced by the fake tmux before it answers <cmd>
 #   $FAKE/hook-ps                         sourced by the fake ps before it answers (remove it inside to run once)
 #   KIT_FAKE_REAL_SLEEP=<seconds>         real time each fake sleep takes (default 0.01)
+# and for the worker (fake Claude in the panes):
+#   $FAKE/warp                            seconds each fake sleep moves the clock, whatever it is asked for
+#   $FAKE/hook-sleep                      sourced by the fake sleep after the clock moved ($now), with $FAKE/lib.sh
+#   $FAKE/lib.sh                          the test's helpers that hooks and react use (written by the worker section)
+#   $FAKE/screen-<pane>                   what capture-pane / agent read show (default: an empty ❯ prompt)
+#   $FAKE/mode-<pane>, $FAKE/scroll-<pane>  #{pane_in_mode} / herdr scroll.offset_from_bottom (default 0)
+#   $FAKE/claude-<pane>                   the pid of the fake Claude in <pane>
+#   $FAKE/scenario-<pane>                 how it answers a request, one line per request (the last line stays)
+#   $FAKE/asked-<pane>                    "<time> <nonce>" per handoff request that reached <pane>
+#   $FAKE/prompted-<pane>, $FAKE/pasted-<pane>  the text of the last herdr agent prompt / tmux paste
 
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -45,8 +55,11 @@ cat "$FAKE/now"
 EOF
 cat >"$FAKE/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
-# fake sleep N: moves the fake clock on by N seconds, then sleeps a little for real
-echo $(($(cat "$FAKE/now") + $1)) >"$FAKE/now"
+# fake sleep N: moves the fake clock on by N seconds ($FAKE/warp seconds instead, when there is one), runs
+# the test's $FAKE/hook-sleep, which sees the new time as $now, then sleeps a little for real
+now=$(($(cat "$FAKE/now") + $(cat "$FAKE/warp" 2>/dev/null || echo "$1")))
+echo "$now" >"$FAKE/now"
+if [[ -f "$FAKE/hook-sleep" ]]; then . "$FAKE/lib.sh"; . "$FAKE/hook-sleep"; fi
 sleep "${KIT_FAKE_REAL_SLEEP:-0.01}"
 EOF
 cat >"$FAKE/bin/tmux" <<'EOF'
@@ -61,6 +74,15 @@ case "$1" in
   new-session) # new-session -d -s NAME -c DIR
     [[ ! -f "$FAKE/fail-launch" ]] && ! grep -qxF "$4" "$FAKE/tmux-sessions" 2>/dev/null && echo "$4" >>"$FAKE/tmux-sessions" ;;
   send-keys) [[ "$4" == -l ]] && echo "$3 $5" >>"$FAKE/ran" ;; # send-keys -t TARGET -l TEXT ...
+  capture-pane) cat "$FAKE/screen-$4" 2>/dev/null || echo '❯ ' ;;  # capture-pane -p -t PANE
+  display-message) cat "$FAKE/mode-$4" 2>/dev/null || echo 0 ;; # display-message -p -t PANE '#{pane_in_mode}'
+  load-buffer) # only the whole request: load-buffer -b B FILE ; paste-buffer -b B -p -d -t PANE ; send-keys -t PANE Enter
+    if [[ "$*" == "load-buffer -b $3 $4 ; paste-buffer -b $3 -p -d -t ${12} ; send-keys -t ${12} Enter" ]]; then
+      cp "$4" "$FAKE/pasted-${12}"; t=$(cat "$4")
+      if [[ "$t" == '[kit-update restart '* ]]; then
+        n=${t#\[kit-update restart }; n=${n%%]*}; echo "$(cat "$FAKE/now") $n" >>"$FAKE/asked-${12}"; "$FAKE/react" "${12}" "$n"
+      fi
+    fi ;;
 esac
 EOF
 cat >"$FAKE/bin/herdr" <<'EOF'
@@ -73,9 +95,39 @@ case "$1 ${2:-}" in
   "workspace create") [[ ! -f "$FAKE/fail-launch" ]] \
     && echo '{"result":{"workspace":{"workspace_id":"w9"},"root_pane":{"pane_id":"w9:p1"}}}' ;;
   "pane run") echo "$3 $4" >>"$FAKE/ran" ;;
+  "agent prompt") # agent prompt PANE TEXT: the fake Claude in PANE reads it
+    printf '%s' "$4" >"$FAKE/prompted-$3"
+    if [[ "$4" == '[kit-update restart '* ]]; then
+      n=${4#\[kit-update restart }; n=${n%%]*}; echo "$(cat "$FAKE/now") $n" >>"$FAKE/asked-$3"; "$FAKE/react" "$3" "$n"
+    fi ;;
+  "agent read") cat "$FAKE/screen-$3" 2>/dev/null || echo '❯ ' ;;
+  "pane get") printf '{"result":{"pane":{"scroll":{"offset_from_bottom":%s}}}}\n' "$(cat "$FAKE/scroll-$3" 2>/dev/null || echo 0)" ;;
 esac
 EOF
-chmod +x "$FAKE"/bin/*
+cat >"$FAKE/react" <<'EOF'
+#!/usr/bin/env bash
+# fake Claude in pane $1 answering request $2 the way the first line of $FAKE/scenario-$1 says (handoff
+# if none; the last line stays for later requests): it writes to its session's transcript, then is idle again
+. "$FAKE/lib.sh"
+pane=$1 nonce=$2 pid=$(cpid "$1") f=$FAKE/scenario-$1
+sc=$(head -1 "$f" 2>/dev/null)
+if (($(cat "$f" 2>/dev/null | wc -l) > 1)); then tail -n +2 "$f" >"$f.tmp" && mv "$f.tmp" "$f"; fi
+t=$(tx "$pid") id=a$nonce
+ask() { j_prompt "[kit-update restart $nonce] ตอบเป็น handoff ของงานใน session นี้"; }
+case ${sc:-handoff} in
+  silent) exit 0 ;;
+  busy-silent) sf_status "$pid" busy; exit 0 ;;
+  handoff) { ask; j_asst "$id" end_turn thinking 'สรุปงาน'; j_asst "$id" end_turn text "$H"; j_routine; } >>"$t" ;;
+  not-ready) { ask; j_asst "$id" end_turn text 'NOT-READY: background Bash ยังรันอยู่'; j_routine; } >>"$t" ;;
+  tool) { ask; j_asst "$id" tool_use tool_use; } >>"$t" ;;
+  api-error) { ask; j_synthetic; } >>"$t" ;;
+  max-tokens) { ask; j_asst "$id" max_tokens text "$H"; } >>"$t" ;;
+  no-heading) { ask; j_asst "$id" end_turn text 'สรุป: ทำไปครึ่งหนึ่งแล้ว'; } >>"$t" ;;
+  queued-after) { ask; j_asst "$id" end_turn text "$H"; j_queued prompt 'แก้ตรงนี้ด้วย'; } >>"$t" ;;
+esac
+sf_status "$pid" idle
+EOF
+chmod +x "$FAKE"/bin/* "$FAKE/react"
 unset HERDR_ENV HERDR_PANE_ID TMUX TMUX_PANE # the multiplexer this test runs in must not leak into the runs below
 export FAKE CLAUDE_CONFIG_DIR="$FAKE/cfg" \
   KIT_UPDATE_TMUX_BIN="$FAKE/bin/tmux" KIT_UPDATE_HERDR_BIN="$FAKE/bin/herdr" KIT_UPDATE_PS_BIN="$FAKE/bin/ps" \
@@ -281,7 +333,8 @@ done
 # --- restart-all.sh: snapshot, state file, lock and worker launch
 # The worker is never run: the fake pane run and send-keys only record its command line in $FAKE/ran.
 reset_world() {
-  rm -rf "${CFG:?}/sessions" "${KU_DIR:?}" "${FAKE:?}"/{panes,agents,workspaces,tmux-calls,herdr-calls,ran,tmux-sessions,fail-launch,hook-list-panes,hook-ps}
+  rm -rf "${CFG:?}/sessions" "${CFG:?}/projects" "${KU_DIR:?}" "${FAKE:?}"/{panes,agents,workspaces,tmux-calls,herdr-calls,ran,tmux-sessions,fail-launch,hook-list-panes,hook-ps} \
+    "${FAKE:?}"/{warp,hook-sleep,screen-*,mode-*,scroll-*,claude-*,scenario-*,asked-*,prompted-*,pasted-*}
   mkdir -p "$CFG/sessions"
   : >"$FAKE/procs"
 }
@@ -290,12 +343,15 @@ ra_as() { # PPID: run restart-all.sh as a process the fake ps knows, whose paren
   sh -c 'printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" $$ "$1" $$ $$ "??" "Thu Oct  2 07:43:00 2026" "bash restart-all.sh" >>"$FAKE/procs"
     exec /bin/bash "$2"' sh "$1" "$here/restart-all.sh" 2>&1
 }
-agent() { # PANE NAME|null WORKSPACE SID: one entry of herdr agent list
-  printf '{"pane_id":"%s","name":%s,"agent":"claude","agent_status":"idle","cwd":"/x","workspace_id":"%s","agent_session":{"value":"%s"}}' "$@"
+agent() { # PANE NAME|null WORKSPACE SID [STATUS]: one entry of herdr agent list (idle unless STATUS)
+  printf '{"pane_id":"%s","name":%s,"agent":"claude","agent_status":"%s","cwd":"/x","workspace_id":"%s","agent_session":{"value":"%s"}}' \
+    "$1" "$2" "${5:-idle}" "$3" "$4"
 }
 agents() { local IFS=,; printf '{"result":{"agents":[%s]}}\n' "$*" >"$FAKE/agents"; }
 tpane() { printf '%s\t%s\t%s\n' "$@" >>"$FAKE/panes"; } # PANE_ID SESSION:WINDOW.PANE PANE_PID
-sf_set() { jq "$2" "$(sf_path "$1")" >"$FAKE/s.json" && mv "$FAKE/s.json" "$(sf_path "$1")"; } # PID JQ_PROGRAM
+sf_set() { # PID JQ_PROGRAM: edit a session file (the hooks use this too: no restart-lib here)
+  jq "$2" "$CLAUDE_CONFIG_DIR/sessions/$1.json" >"$FAKE/s.json" && mv "$FAKE/s.json" "$CLAUDE_CONFIG_DIR/sessions/$1.json"
+}
 state() { echo "$LOCK/state.$(lock_token)"; }
 row() { awk -F'\t' -v p="$1" '$1 == "pane" && $5 == p' "$(state)" 2>/dev/null; } # the state row of Claude PID
 launches() { cat "$FAKE/ran" 2>/dev/null | wc -l | tr -d ' '; }
@@ -458,6 +514,258 @@ echo "rm -f '$FAKE/hook-ps'; mkdir '$LOCK'" >"$FAKE/hook-ps" # a third caller ma
 ! lock_takeover LATE && [[ "$(head -1 "$LOCK.stale.LATE/owner")" == 'TOKW 558 w8:p5' && -d "$LOCK" && -z "$(ls -A "$LOCK")" ]]
 check "takeover that moved a running worker's lock while a new one was made: leaves it aside, deletes nothing" $?
 rm -rf "${LOCK:?}.stale.LATE"
+
+# --- restart-worker.sh: asking for handoffs and reading them (spec §3 rules for every step, steps 1–3)
+# Each world: the lock is token TOK's and $WST its state; wpane adds a fake Claude pane; rw runs the worker
+# to its end. The clock starts at $T0, and hook lines run at each nap, after the clock moved ($now).
+REQ=' ตอบเป็น handoff ของงานใน session นี้ในแชทเลย ห้ามเขียนไฟล์และห้ามเรียก tool ใด ๆ รวมถึง handoff ของ kit-checkpoint ใช้หัวข้อตามนี้ตรงตัว: เป้าหมาย / ทำเสร็จแล้ว / ค้างอยู่ตรงไหน / ตัดสินใจอะไรไปแล้วและเพราะอะไร / ไฟล์ที่เกี่ยวข้อง / ขั้นต่อไป ยกเว้นสองกรณีให้ตอบ NOT-READY: <เหตุผลหนึ่งบรรทัด> แล้วจบ turn (1) ยังมีงานเบื้องหลังที่ยังไม่จบ (background Bash, subagent, teammate ของ agent team, Monitor, /loop) ไม่นับ worker ของ kit-update restart (2) หลังคำถามล่าสุดที่คุณถามผู้ใช้ ยังไม่มีข้อความจากผู้ใช้เข้ามาเลย (ข้อความ [kit-update restart ...], คำตอบ NOT-READY ของคุณเอง, task notification และรอบของ /loop ไม่นับเป็นข้อความจากผู้ใช้) ไม่นับคำถามในสรุปที่คุณตอบกลับ handoff ที่ส่งมาเป็นข้อความแรก เช่นจาก [kit-update restart] หรือ [kit-checkpoint #...] (เรื่องที่ค้างอยู่ใน handoff แล้ว)' # spec §3 step 2, after "[kit-update restart <nonce>]"
+cpid() { cat "$FAKE/claude-$1"; } # PANE: the pid of its Claude
+tx() { # PID: the transcript of its session now, in the folder Claude Code would use (made if missing)
+  local f=$CLAUDE_CONFIG_DIR/sessions/$1.json d
+  d=$CLAUDE_CONFIG_DIR/projects/$(jq -r .cwd "$f" | tr '/._' '---')
+  mkdir -p "$d" && echo "$d/$(jq -r .sessionId "$f").jsonl"
+}
+sf_status() { sf_set "$1" ".status = \"$2\" | .statusUpdatedAt = $(($(cat "$FAKE/now") * 1000))"; } # PID STATUS
+proc_set() { # PID COLUMN VALUE: change one column of a fake process (4 tpgid, 5 tty, 6 lstart)
+  awk -F'\t' -v OFS='\t' -v p="$1" -v c="$2" -v v="$3" '$1 == p { $c = v } 1' "$FAKE/procs" >"$FAKE/procs.new" \
+    && mv "$FAKE/procs.new" "$FAKE/procs"
+}
+activity() { # PANE: someone types into its session, and Claude answers
+  local p; p=$(cpid "$1")
+  { j_prompt 'ต่อจากเมื่อกี้'; j_asst "x$(cat "$FAKE/now")" end_turn text 'เรียบร้อย'; } >>"$(tx "$p")"
+  sf_status "$p" idle
+}
+answer() { "$FAKE/react" "$1" "$(awk 'END { print $2 }' "$FAKE/asked-$1")"; } # PANE: a late answer to its last request
+{ declare -f fake_lstart fake_proc fake_kill sf_set j_prompt j_queued j_asst j_synthetic j_routine \
+    cpid tx sf_status proc_set activity answer; declare -p H; } >"$FAKE/lib.sh"
+
+wworld() { # [MUX]: a fresh world whose lock and state are token TOK's; the worker runs in MUX (herdr)
+  reset_world
+  mkdir -p "$LOCK"; echo 'starting TOK' >"$LOCK/owner"
+  WST=$LOCK/state.TOK
+  printf 'config\t%s\nsocket\t\nmux\t%s\n' "$CFG" "${1:-herdr}" >"$WST"
+  echo '{"result":{"agents":[]}}' >"$FAKE/agents"
+  T0=$(cat "$FAKE/now")
+}
+wpane() { # PANE PID NAME [ISSUER]: an idle Claude PID in PANE (%N: tmux, else herdr) under shell PID-1, one turn done
+  local sh=$(($2 - 1)) mux=herdr label="$3 work" aname=$3
+  if [[ "$1" == %* ]]; then mux=tmux label=main:0.${1#%} aname=; fi
+  fake_proc "$sh" 1 "$sh" "$2" "ttys$2" -zsh
+  fake_proc "$2" "$sh" "$2" "$2" "ttys$2" claude
+  fake_session "$2" "S$2" "$3" idle "/x/$3"
+  echo "$2" >"$FAKE/claude-$1"
+  { j_prompt 'งานเดิม'; j_asst "o$2" end_turn text 'เสร็จแล้ว'; j_routine; } >"$(tx "$2")"
+  if [[ $mux == herdr ]]; then
+    jq -c --argjson a "$(agent "$1" "\"$3\"" w1 "S$2")" '.result.agents += [$a]' "$FAKE/agents" >"$FAKE/a.json" \
+      && mv "$FAKE/a.json" "$FAKE/agents"
+  fi
+  printf '%s\t' pane "$mux" "$1" "$label" "$2" "$(fake_lstart "$2")" "ttys$2" "$sh" "S$2" "$3" 2.1.309 "/x/$3" "${4:-0}" "$aname" >>"$WST"
+  echo claude >>"$WST"
+}
+st_set() { # PID COLUMN VALUE: change one column of the state row of Claude PID
+  awk -F'\t' -v OFS='\t' -v p="$1" -v c="$2" -v v="$3" '$1 == "pane" && $5 == p { $c = v } 1' "$WST" >"$WST.new" \
+    && mv "$WST.new" "$WST"
+}
+scen() { local p=$1; shift; printf '%s\n' "$@" >"$FAKE/scenario-$p"; } # PANE SCENARIO...: its answers, in order
+hook() { { echo "T0=$T0"; printf '%s\n' "$@"; } >"$FAKE/hook-sleep"; } # LINE...: bash run at each nap
+rw() { KIT_FAKE_REAL_SLEEP=0 /bin/bash "$here/restart-worker.sh" "$WST" >"$FAKE/wout" 2>&1; }
+asks() { cat "$FAKE/asked-$1" 2>/dev/null | wc -l | tr -d ' '; }                          # PANE: requests that reached it
+ask_at() { sed -n "${2:-1}p" "$FAKE/asked-$1" 2>/dev/null | cut -d' ' -f1; }             # PANE [N]: when request N got there
+handoff() { ls "$HANDOFFS"/*-"$1".md 2>/dev/null; }                                     # NAME-PANE, sanitized: its handoff file
+skipped() { grep -qF -- "    - $1 — $2" "$FAKE/wout"; }                                 # SHOWN REASON: a Summary line
+
+wworld; wpane w1:p1 101 alpha
+size=$(($(wc -c <"$(tx 101)")))
+rw
+n=$(awk '{ print $2 }' "$FAKE/asked-w1:p1" 2>/dev/null)
+f=$HANDOFFS/$(date -r $((T0 + 10)) +%Y%m%d-%H%M%S)-alpha-w1_p1.md
+[[ "$(asks w1:p1)" == 1 && "$n" =~ ^[0-9a-f]{16}$ && "$(cat "$FAKE/prompted-w1:p1")" == "[kit-update restart $n]$REQ" ]] \
+  && grep -qxF "agent prompt w1:p1 [kit-update restart $n]$REQ" "$FAKE/herdr-calls" && ! grep -q -- --wait "$FAKE/herdr-calls" \
+  && [[ "$(cat "$f" 2>/dev/null)" == "$H" ]] && grep -q "request $n, its transcript read from byte $size)" "$LOG"
+check "idle herdr pane: request sent, handoff file written" $?
+grep -qx 'Summary  restarted: 0 · skipped: 1' "$FAKE/wout" && skipped 'alpha (herdr w1:p1)' 'exit not implemented' \
+  && grep -qx 'Summary  restarted: 0 · skipped: 1' "$LOG" && [[ ! -e "$LOCK" ]]
+check "Summary in the pane and the log, lock released at the end" $?
+
+wworld tmux; wpane %1 101 alpha
+rw
+n=$(awk '{ print $2 }' "$FAKE/asked-%1" 2>/dev/null)
+grep -qxF "load-buffer -b kit-update-$n $LOCK/request-$n.txt ; paste-buffer -b kit-update-$n -p -d -t %1 ; send-keys -t %1 Enter" \
+  "$FAKE/tmux-calls" && cmp -s "$FAKE/pasted-%1" <(printf '%s' "[kit-update restart $n]$REQ") && [[ -n "$(handoff alpha-_1)" ]]
+check "idle tmux pane: named buffer, paste -p, Enter in the same call" $?
+
+held() { # LABEL PANE WHY HOOK: PANE takes no keys (the log says "waiting: WHY") until HOOK runs at T0+60, then is asked
+  hook "((now == T0 + 60)) && { $4; }"
+  rw
+  [[ "$(ask_at "$2")" == $((T0 + 60)) && -n "$(ls "$HANDOFFS" 2>/dev/null)" ]] && grep -qF "waiting: $3" "$LOG"
+  check "$1" $?
+}
+wworld; wpane w1:p1 101 alpha; sf_set 101 '.status = "busy"'
+held "busy then idle: asked only after idle" w1:p1 busy 'sf_status 101 idle'
+wworld; wpane w1:p1 101 alpha
+fake_proc 150 101 150 101 ttys101 "/bin/zsh -c source $CFG/shell-snapshots/snapshot-zsh-1-x.sh && eval 'sleep 300'"
+held "background shell child: waits without asking" w1:p1 'background process still running' 'fake_kill 150'
+wworld; wpane w1:p1 101 alpha
+proc_set 101 4 100; printf '~/x/alpha\n❯ \n' >"$FAKE/screen-w1:p1" # Ctrl+Z: its shell is in front, and its prompt starts with ❯
+held "suspended (pgid != tpgid) with ❯ screen: no keys" w1:p1 'not in front' 'proc_set 101 4 101'
+wworld tmux; wpane %1 101 alpha; echo 1 >"$FAKE/mode-%1"
+held "tmux copy mode: no keys until it leaves, then asked" %1 'in copy mode' 'echo 0 >"$FAKE/mode-%1"'
+wworld; wpane w1:p1 101 alpha; echo 3 >"$FAKE/scroll-w1:p1"
+held "herdr pane scrolled up: no keys until back at the bottom" w1:p1 'scrolled up' 'echo 0 >"$FAKE/scroll-w1:p1"'
+wworld; wpane w1:p1 101 alpha; sf_set 101 '.status = "shell"'
+held "status shell (background shell): waits without asking" w1:p1 'background process still running' 'sf_status 101 idle'
+
+wworld; wpane w1:p1 101 alpha; echo 600 >"$FAKE/warp"
+jq '.result.agents[0].agent_status = "blocked"' "$FAKE/agents" >"$FAKE/a.json" && mv "$FAKE/a.json" "$FAKE/agents"
+rw
+[[ "$(asks w1:p1)" == 0 ]] && ! grep -q 'agent prompt' "$FAKE/herdr-calls" && skipped 'alpha (herdr w1:p1)' 'waiting on a question' \
+  && grep -q '4 h' "$FAKE/wout" && (($(cat "$FAKE/now") - T0 >= 14400))
+check "blocked until the cap: skipped, no keys" $?
+
+wworld; wpane w1:p1 101 alpha; echo 'starting OTHER' >"$LOCK/owner"
+rw; rc=$?
+[[ $rc == 0 && ! -e "$FAKE/herdr-calls" && ! -e "$FAKE/tmux-calls" && "$(cat "$LOCK/owner")" == 'starting OTHER' && ! -e "$LOG" ]]
+check "token mismatch: worker exits without touching panes" $?
+
+wworld; wpane w1:p1 101 alpha
+hook "cp '$LOCK/owner' '$FAKE/owner-seen'"
+HERDR_PANE_ID=w9:p1 KIT_FAKE_REAL_SLEEP=0 sh -c 'echo $$ >"$FAKE/wpid"
+  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" $$ 1 $$ $$ "??" "Thu Oct  2 07:43:00 2026" "bash restart-worker.sh state.TOK" >>"$FAKE/procs"
+  exec /bin/bash "$1" "$2"' sh "$here/restart-worker.sh" "$WST" >"$FAKE/wout" 2>&1
+[[ "$(cat "$FAKE/owner-seen" 2>/dev/null)" == "TOK $(cat "$FAKE/wpid") w9:p1"$'\ncmd bash restart-worker.sh state.TOK' ]]
+check "owner: token, pid, pane and command line of the worker" $?
+
+wworld; wpane w1:p1 101 alpha; sf_set 101 '.status = "busy"'
+hook "((now == T0 + 20)) && echo 'starting OTHER' >'$LOCK/owner'" '((now == T0 + 40)) && sf_status 101 idle'
+rw # it must stop at T0+20, on the tick itself, not at T0+40 when it would type
+[[ "$(asks w1:p1)" == 0 && "$(cat "$LOCK/owner" 2>/dev/null)" == 'starting OTHER' && "$(cat "$FAKE/now")" == $((T0 + 20)) ]] \
+  && grep -q 'lost the lock' "$LOG"
+check "lost the lock mid-run: stops without keys" $?
+
+wworld
+wpane w1:p1 101 alpha; proc_set 101 6 'Fri Oct  3 01:02:03 2026' # pid 101 now belongs to another process
+wpane w1:p2 111 beta; proc_set 111 5 ttys999
+wpane w1:p3 121 gamma
+jq '.result.agents |= map(select(.pane_id != "w1:p3"))' "$FAKE/agents" >"$FAKE/a.json" && mv "$FAKE/a.json" "$FAKE/agents"
+rw
+[[ "$(asks w1:p1)" == 0 ]] && skipped 'alpha (herdr w1:p1)' gone; check "pid reused (procStart differs): gone" $?
+[[ "$(asks w1:p2)" == 0 ]] && skipped 'beta (herdr w1:p2)' gone; check "tty differs: gone" $?
+[[ "$(asks w1:p3)" == 0 ]] && skipped 'gamma (herdr w1:p3)' gone; check "herdr pane vanished: gone" $?
+
+wworld; echo 150 >"$FAKE/warp"
+wpane w1:p1 101 alpha; scen w1:p1 not-ready handoff # 5 min after the request, only its statusUpdatedAt moves
+wpane w1:p2 111 beta; scen w1:p2 not-ready handoff  # at 40 min, only its transcript moves
+wpane w1:p3 121 gamma; scen w1:p3 not-ready handoff # /clear after its NOT-READY
+wpane w1:p4 131 delta; scen w1:p4 not-ready         # only another session in its folder moves
+hook '((now == T0 + 300)) && sf_status 101 idle' '((now == T0 + 2400)) && j_prompt "ต่อ" >>"$(tx 111)"' \
+  '((now == T0 + 450)) && sf_set 121 ".sessionId = \"S121b\""' \
+  '((now == T0 + 450)) && j_prompt "อีก session" >>"$CLAUDE_CONFIG_DIR/projects/-x-delta/S999.jsonl"' \
+  '((now == T0 + 3000)) && fake_kill 131'
+rw
+a1=$(ask_at w1:p1) a2=$(ask_at w1:p1 2) b2=$(ask_at w1:p2 2) c1=$(ask_at w1:p3) c2=$(ask_at w1:p3 2)
+((a1 == T0 && a2 - a1 == 1800 && b2 >= T0 + 2400)) && [[ -n "$(handoff alpha-w1_p1)" && -n "$(handoff beta-w1_p2)" ]]
+check "not-ready: no re-ask before activity and 30 min" $?
+grep -qF 'alpha (herdr w1:p1) — NOT-READY: background Bash ยังรันอยู่' "$LOG"; check "not-ready: reason is in the log" $?
+((c2 - c1 == 1800)) && [[ -n "$(handoff gamma-w1_p3)" ]]; check "not-ready then /clear: new sessionId counts as activity" $?
+[[ "$(asks w1:p4)" == 1 ]] && skipped 'delta (herdr w1:p4)' gone
+check "activity of another session in the same folder does not count" $?
+
+wworld; wpane w1:p1 101 alpha; rm -f "$(tx 101)"
+rw
+[[ "$(asks w1:p1)" == 1 && -n "$(handoff alpha-w1_p1)" ]] && grep -q 'transcript read from byte 0)' "$LOG"
+check "new session without a transcript yet: offset 0, answer read" $?
+
+wworld; wpane w1:p1 101 alpha; mkdir -p "$HANDOFFS"; chmod 500 "$HANDOFFS"
+rw; chmod 700 "$HANDOFFS"
+skipped 'alpha (herdr w1:p1)' 'could not write its handoff' && ! grep -q 'exit not implemented' "$FAKE/wout"
+check "handoff file not written: skipped, never ready" $?
+
+wworld; echo 180 >"$FAKE/warp"
+wpane w1:p1 101 alpha; scen w1:p1 not-ready
+hook 'activity w1:p1' '((now >= T0 + 7200)) && fake_kill 101'
+rw
+awk 'NR > 1 && $1 - p < 1800 { bad = 1 } { p = $1 } END { exit bad || NR < 4 }' "$FAKE/asked-w1:p1" 2>/dev/null
+check "/loop activity every 3 min: asked at most every 30 min" $?
+
+wworld; echo 60 >"$FAKE/warp"
+wpane w1:p1 101 alpha; scen w1:p1 queued-after handoff
+rw
+s1=$(ask_at w1:p1) s2=$(ask_at w1:p1 2)
+((s2 - s1 == 1800)) && [[ -n "$(handoff alpha-w1_p1)" ]]; check "stale (queued prompt): re-asked after 30 min without activity" $?
+
+wworld; echo 60 >"$FAKE/warp"
+wpane w1:p1 101 alpha; scen w1:p1 tool api-error max-tokens
+wpane w1:p2 111 beta; scen w1:p2 no-heading
+rw
+awk 'NR > 1 && $1 - p < 300 { bad = 1 } { p = $1 } END { exit bad || NR != 3 }' "$FAKE/asked-w1:p1" 2>/dev/null \
+  && [[ "$(asks w1:p2)" == 3 ]] && skipped 'alpha (herdr w1:p1)' 'no valid handoff' && skipped 'beta (herdr w1:p2)' 'no valid handoff' \
+  && grep -q 'tool call' "$LOG" && grep -q 'api error' "$LOG" && grep -q 'stop_reason max_tokens' "$LOG" \
+  && grep -q 'missing headings' "$LOG" && ! grep -q /exit "$FAKE/herdr-calls" && [[ -z "$(ls "$HANDOFFS" 2>/dev/null)" ]]
+check "invalid x3: skipped no valid handoff, 5 min apart, never /exit" $?
+
+wworld
+wpane w1:p1 101 alpha; scen w1:p1 silent
+wpane w1:p2 111 beta; sf_set 111 '.status = "busy"' # keeps the worker going after alpha is given up
+hook '((now == T0 + 120)) && sf_status 111 idle'
+rw
+[[ "$(asks w1:p1)" == 1 && "$(grep -c '^agent prompt w1:p1 ' "$FAKE/herdr-calls")" == 1 ]] \
+  && skipped 'alpha (herdr w1:p1)' 'request not submitted' \
+  && awk '/alpha .*skipped: request not submitted/ { s = NR } /beta .*asked/ { b = NR } END { exit !(s && b && s < b) }' "$LOG"
+check "request not submitted: no nonce in 30s, then no more keys" $?
+
+wworld; wpane w1:p1 101 alpha; scen w1:p1 busy-silent handoff
+hook '((now == T0 + 60)) && answer w1:p1'
+rw
+[[ "$(asks w1:p1)" == 1 && -n "$(handoff alpha-w1_p1)" ]] && ! grep -q 'not submitted' "$LOG"
+check "busy after send: keeps waiting past 30s" $?
+
+wworld; wpane w1:p1 101 alpha; scen w1:p1 busy-silent handoff
+hook '((now == T0 + 20)) && sf_set 101 ".sessionId = \"S101b\" | .status = \"idle\""'
+rw
+[[ "$(asks w1:p1)" == 2 && "$(ask_at w1:p1 2)" == $((T0 + 30)) && -n "$(handoff alpha-w1_p1)" ]] && ! grep -q 'no valid handoff' "$LOG"
+check "sessionId changes while asked: back to wait, not a failure" $?
+
+wworld
+wpane w1:p1 101 alpha; sf_set 101 '.status = "busy"' # waiting, so it holds no slot
+wpane w1:p2 111 beta; wpane w1:p3 121 gamma; wpane w1:p4 131 delta
+hook '((now == T0 + 30)) && sf_status 101 idle'
+rw
+[[ "$(ask_at w1:p2) $(ask_at w1:p3) $(ask_at w1:p4) $(ask_at w1:p1)" == "$T0 $T0 $((T0 + 10)) $((T0 + 30))" ]]
+check "three idle panes: at most two asked at once" $?
+
+wworld; wpane w1:p1 101 alpha 1; wpane w1:p2 111 beta
+rw
+[[ "$(ask_at w1:p2) $(ask_at w1:p1)" == "$T0 $((T0 + 10))" && -n "$(handoff alpha-w1_p1)" ]]; check "issuer goes last" $?
+
+wworld; echo 600 >"$FAKE/warp"
+wpane w1:p1 101 alpha; scen w1:p1 not-ready
+wpane w1:p2 111 beta; fake_proc 150 111 150 111 ttys111 "/bin/zsh -c source $CFG/shell-snapshots/snapshot-zsh-1-x.sh && eval 'npm run dev'"
+wpane w1:p3 121 gamma 1
+rw
+[[ -n "$(handoff gamma-w1_p3)" ]] && skipped 'alpha (herdr w1:p1)' 'NOT-READY: background Bash'
+check "issuer still runs while another pane is NOT-READY forever" $?
+[[ -n "$(handoff gamma-w1_p3)" && "$(asks w1:p2)" == 0 ]] && skipped 'beta (herdr w1:p2)' 'background process still running'
+check "issuer still runs while another pane has a background shell forever" $?
+
+wworld
+wpane w1:p1 101 cee; sf_set 101 '.status = "busy"' # idle at T0+30, while both slots are still taken
+wpane w1:p2 111 ay; scen w1:p2 busy-silent handoff  # these two hold the slots until T0+30
+wpane w1:p3 121 bee; scen w1:p3 busy-silent handoff
+wpane w1:p4 131 me 1
+hook '((now == T0 + 30)) && { sf_status 101 idle; answer w1:p2; answer w1:p3; }'
+rw
+[[ "$(ask_at w1:p1) $(ask_at w1:p4)" == "$((T0 + 40)) $((T0 + 50))" ]]; check "issuer does not jump a pane waiting for a slot" $?
+
+wworld
+wpane w1:p2 111 beta; wpane %3 121 gamma; wpane w1:p4 131 delta
+long=a-very-long-session-name-that-goes-on-and-on-and-on
+st_set 111 10 ''; st_set 111 14 ''; st_set 111 4 'งาน ทดลอง/1' # no session or agent name: the workspace label
+st_set 121 10 ''                                              # tmux, no session name: the tmux session
+st_set 131 10 "$long"
+rw
+[[ -n "$(handoff __________1-w1_p2)" && -n "$(handoff main-_3)" && -n "$(handoff "${long:0:40}-w1_p4")" ]] \
+  && skipped 'งาน ทดลอง/1 (herdr w1:p2)' 'exit not implemented' && skipped 'main (tmux main:0.3)' 'exit not implemented'
+check "state rows with empty name fields: columns stay in place, names fall back" $?
 
 ((fails)) && { echo "$fails failed"; exit 1; }
 echo "all passed"
