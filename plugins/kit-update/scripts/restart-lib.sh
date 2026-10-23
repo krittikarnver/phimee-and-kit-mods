@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kit-update restart-lib — process, session file and log helpers for restart.
+# kit-update restart-lib — process, session file, transcript and log helpers for restart.
 #
 # Source this file; it only defines functions (and sources pane-lib.sh). Call
 # ku_paths first: the other helpers read what it sets. It creates nothing, so
@@ -123,6 +123,90 @@ transcript_for() {
     [[ -f "$f" ]] && { echo "$f"; return 0; }
   done
   return 1
+}
+
+# Run jq PROGRAM over transcript FILE after byte OFFSET. Only that tail is read: a
+# transcript grows to MBs and is read every 10 s. The tail comes in raw (-Rs) so PROGRAM
+# can count its bytes, and PROGRAM gets:
+#   entries    the JSON objects on its complete lines (a half-written last line waits for the next read)
+#   is_prompt  one entry is something sent to Claude: a user string that isn't meta, or a queued_command
+#   ptext      that prompt's text
+transcript_jq() { # FILE OFFSET PROGRAM [JQ OPTIONS...]
+  local file=$1 off=$2 prog=$3
+  shift 3 # not "${@:4}": bash 3.2 joins that into one word when IFS isn't the default
+  tail -c +$((off + 1)) "$file" 2>/dev/null | jq -Rs "$@" '
+    def entries: [split("\n")[:-1][] | fromjson? | objects];
+    def is_prompt: (.type == "user" and (.message.content | type) == "string" and (.isMeta | not))
+      or (.type == "attachment" and .attachment.type == "queued_command");
+    def ptext: if .type == "user" then .message.content else .attachment.prompt end;
+    '"$prog"
+}
+
+# Read Claude's answer to the request "[kit-update restart NONCE] ..." in FILE after byte
+# OFFSET (spec §3 step 3). IDLE is 1 when the pane is idle now. Echoes VERDICT<TAB>END_OFFSET<TAB>DETAIL:
+#   no-nonce   the request isn't in the transcript
+#   pending    no answer yet, or it ended but the pane isn't idle yet (more of it may come)
+#   stale      something else got in (a prompt, another message, an interrupt), or the request was queued
+#   not-ready  Claude answered NOT-READY; DETAIL is its reason
+#   handoff    a usable handoff; the answer's text is written to OUT
+#   invalid    no handoff; DETAIL says why
+# END_OFFSET is where the complete lines read end.
+# The checks run in the spec's order. The answer is Claude's entries from the request to the
+# end of the first message whose stop_reason isn't tool_use (one message spans several entries).
+# shortcut: an OFFSET inside a multibyte character skews END_OFFSET (jq reads the cut bytes
+# as U+FFFD). Callers pass line starts (the file size while idle, or an END_OFFSET); count
+# the bytes outside jq if that changes.
+answer_state() { # FILE OFFSET NONCE IDLE OUT
+  local line
+  transcript_jq "$1" "$2" '
+    def has_tool: .message.stop_reason == "tool_use" or any(.message.content[]?; .type == "tool_use");
+    def interrupt: .type == "user" and (.message.content | type) == "array"
+      and any(.message.content[]; .type == "text" and (.text | startswith("[Request interrupted by user")));
+    ($off + utf8bytelength - (split("\n") | last // "" | utf8bytelength)) as $end
+    | entries as $e
+    # a long request is stored wrapped: "\n\n<pasted_content id=\"5444\">\n[kit-update restart ..."
+    | ([$e | to_entries[] | select(.value | is_prompt and (ptext | strings
+        | sub("^\\s*<pasted_content id=\"[^\"]*\">\\s*"; "") | startswith($tag))) | .key] | first) as $n
+    | if $n == null then ["no-nonce", ""]
+      elif $e[$n].type == "attachment" then ["stale", "request queued"]
+      else $e[$n + 1:] as $a
+        | ([$a | to_entries[] | select(.value.type == "assistant") | .key] | first // ($a | length)) as $c1
+        | [$a[] | select(.type == "assistant")] as $c
+        | ([$c | to_entries[] | select(.value.message.stop_reason != "tool_use") | .key] | first) as $k
+        | (if $k == null then $c else $c[:$k] + [$c[$k:][] | select(.message.id == $c[$k].message.id)] end) as $ans
+        | (if $k == null then [] else [$c[$k + 1:][] | select(.message.id != $c[$k].message.id)] end) as $later
+        | ($ans | map(.message.content[]? | select(.type == "text") | .text) | join("\n")) as $text
+        | ($text | sub("^[\\s*`]+"; "")) as $bare
+        | (["เป้าหมาย", "ทำเสร็จ", "ค้าง", "ตัดสินใจ", "ไฟล์", "ขั้นต่อไป"]
+          | map(select(. as $h | $text | contains($h) | not))) as $missing
+        # start-of-session task notifications come queued right after the first prompt, before the answer
+        | if any($a | to_entries[]; (.value | is_prompt)
+            and (.value.attachment.commandMode == "task-notification" and .key < $c1 | not))
+          then ["stale", "prompt after the request"]
+        elif any($ans[]; has_tool) then ["invalid", "tool call"]
+        elif any($c[]; .message.stop_reason == null) or any($a[]; interrupt) then ["stale", "interrupted"]
+        elif $k == null then ["pending", ""]
+        elif $later != [] then ["stale", "message after the answer"]
+        elif $idle != "1" then ["pending", ""]
+        elif any($ans[]; .message.model == "<synthetic>" or .isApiErrorMessage) then ["invalid", "api error"]
+        elif $c[$k].message.stop_reason != "end_turn" then ["invalid", "stop_reason \($c[$k].message.stop_reason)"]
+        elif $bare | startswith("NOT-READY") then
+          ["not-ready", ($bare | ltrimstr("NOT-READY") | sub("^[\\s:*`]+"; "") | gsub("\\s+"; " ") | sub(" $"; ""))]
+        elif $missing == [] then ["handoff", "", $text]
+        else ["invalid", "missing headings: \($missing | join(", "))"]
+        end
+      end
+    | "\(.[0])\t\($end)\t\(.[1])", (.[2] // empty)
+  ' --argjson off "$2" --arg tag "[kit-update restart $3]" --arg idle "$4" -r | {
+    IFS= read -r line
+    printf '%s\n' "$line"
+    if [[ "$line" == handoff$'\t'* ]]; then cat >"$5"; fi
+  }
+}
+
+# 0 when, after byte OFFSET of FILE, something was sent to Claude or Claude wrote anything.
+activity_after() { # FILE OFFSET
+  transcript_jq "$1" "$2" 'any(entries[]; is_prompt or .type == "assistant")' -e >/dev/null
 }
 
 # Run CMD in its own process group, so Ctrl-C or HUP sent to the worker's pane

@@ -145,5 +145,116 @@ run_detached sh -c 'sleep 0.6; exit 4'; [[ $? == 4 && -s "$FAKE/trapped" ]]
 check "run_detached waits again after a trap cuts wait short" $?
 trap - USR1
 
+# --- restart-lib: transcript reading
+# j_* print one transcript line each (j_routine prints several), shaped like Claude Code 2.1.309's.
+j_prompt() { jq -nc --arg t "$1" '{type: "user", message: {role: "user", content: $t}}'; }
+j_queued() { # MODE TEXT; MODE = prompt (typed while busy) | task-notification (start of session)
+  jq -nc --arg m "$1" --arg t "$2" '{type: "attachment", attachment: ({type: "queued_command", prompt: $t, commandMode: $m}
+    + if $m == "task-notification" then {isMeta: true} else {humanTurn: true} end)}'
+}
+j_asst() { # ID STOP KIND [TEXT]; STOP null = interrupted; KIND = text | thinking | tool_use
+  jq -nc --arg id "$1" --arg stop "$2" --arg kind "$3" --arg t "${4:-}" '{type: "assistant", message: {id: $id, model: "claude-x",
+    content: [if $kind == "text" then {type: "text", text: $t} elif $kind == "thinking" then {type: "thinking", thinking: $t}
+      else {type: "tool_use", name: "Bash", input: {}} end],
+    stop_reason: (if $stop == "null" then null else $stop end)}}'
+}
+j_synthetic() {
+  jq -nc '{type: "assistant", isApiErrorMessage: true, message: {id: "x", model: "<synthetic>",
+    content: [{type: "text", text: "API Error: 529 overloaded"}], stop_reason: "stop_sequence"}}'
+}
+j_interrupt() { jq -nc '{type: "user", message: {content: [{type: "text", text: "[Request interrupted by user]"}]}}'; }
+j_routine() { # what follows a normal turn
+  jq -nc '{type: "system", subtype: "turn_duration"}, {type: "attachment", attachment: {type: "total_tokens_reminder"}},
+    {type: "attachment", attachment: {type: "prompt_snapshot"}}, {type: "file-history-snapshot"}, {type: "last-prompt"},
+    {type: "custom-title"}, {type: "permission-mode"}'
+}
+T=$FAKE/t.jsonl OUT=$FAKE/handoff.md
+ASK='[kit-update restart N1] ตอบเป็น handoff ของงานใน session นี้'
+H=$'## เป้าหมาย\nลองระบบ\n## ทำเสร็จแล้ว\n- a\n## ค้างอยู่ตรงไหน\n- b\n## ตัดสินใจอะไรไปแล้วและเพราะอะไร\n- c\n## ไฟล์ที่เกี่ยวข้อง\n- /x/alpha/a.sh\n## ขั้นต่อไป\n- d'
+expect() { # LABEL VERDICT [DETAIL] [IDLE]: answer_state of all of $T with nonce N1; OUT is written on handoff only
+  local v e d
+  rm -f "$OUT"
+  IFS=$'\t' read -r v e d < <(answer_state "$T" 0 N1 "${4:-1}" "$OUT")
+  [[ "$v" == "$2" && "$d" == "${3:-}" && "$e" == "$(($(wc -c <"$T")))" && ("$v" == handoff || ! -e "$OUT") ]]
+  check "$1" $?
+}
+
+{ j_prompt "$ASK"; j_asst m1 end_turn thinking 'คิดก่อน'; j_asst m1 end_turn text "$H"; } >"$T"
+expect "handoff: thinking + text of one message" handoff
+[[ "$(cat "$OUT")" == "$H" ]]; check "handoff: OUT holds the text, not the thinking" $?
+{ j_prompt $'\n\n<pasted_content id="5444">\n'"$ASK"; j_asst m1 end_turn text "$H"; } >"$T"
+expect "handoff: nonce entry wrapped in pasted_content" handoff
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"; j_routine; j_prompt $'<task-notification>\n<task-id>b1</task-id>'; } >"$T"
+expect "stale: task notification as a user string after the answer" stale 'prompt after the request'
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"; j_routine; } >"$T"
+expect "handoff: routine entries after are ignored" handoff
+{ j_prompt "$ASK"; j_queued task-notification '<task-notification>a'; j_queued task-notification '<task-notification>b'
+  j_asst m1 end_turn text "$H"; } >"$T"
+expect "handoff: start-of-session task notifications before the answer" handoff
+for a in 'plain|NOT-READY: bg job' '**|**NOT-READY:** bg job' 'backtick|`NOT-READY`: bg job' $'leading spaces|  \n NOT-READY: bg job'; do
+  { j_prompt "$ASK"; j_asst m1 end_turn text "${a#*|}"; } >"$T"
+  expect "not-ready: ${a%%|*}" not-ready 'bg job'
+done
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"$'\nเกือบตอบ NOT-READY แล้ว แต่งานจบก่อน'; } >"$T"
+expect "handoff mentioning NOT-READY inside" handoff
+
+{ j_prompt "$ASK"; j_asst m1 tool_use tool_use; } >"$T"
+expect "invalid: tool_use" invalid 'tool call'
+{ j_prompt "$ASK"; j_synthetic; } >"$T"
+expect "invalid: api error" invalid 'api error'
+{ j_prompt "$ASK"; j_asst m1 max_tokens text "$H"; } >"$T"
+expect "invalid: max_tokens" invalid 'stop_reason max_tokens'
+{ j_prompt "$ASK"; j_asst m1 end_turn text $'## เป้าหมาย\n## ทำเสร็จแล้ว\n## ตัดสินใจ\n## ขั้นต่อไป'; } >"$T"
+expect "invalid: missing heading" invalid 'missing headings: ค้าง, ไฟล์'
+
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"; j_prompt 'อีกเรื่อง'; } >"$T"
+expect "stale: prompt after answer" stale 'prompt after the request'
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"; j_asst m2 end_turn text 'อีกข้อความ'; } >"$T"
+expect "stale: assistant message after answer" stale 'message after the answer'
+{ j_prompt "$ASK"; j_queued prompt 'แก้ตรงนี้ด้วย'; j_asst m1 end_turn text "$H"; } >"$T"
+expect "stale: queued prompt before answer" stale 'prompt after the request'
+{ j_prompt "$ASK"; j_asst m1 end_turn thinking 'คิดก่อน'; j_queued task-notification '<task-notification>a'
+  j_asst m1 end_turn text "$H"; } >"$T"
+expect "stale: task notification after the answer started" stale 'prompt after the request'
+{ j_prompt "$ASK"; j_asst m1 null text "$H"; } >"$T"
+expect "stale: interrupted (stop_reason null)" stale interrupted
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"; j_interrupt; } >"$T"
+expect "stale: interrupted ([Request interrupted by user])" stale interrupted
+{ j_queued prompt "$ASK"; j_asst m1 end_turn text "$H"; } >"$T"
+expect "stale: nonce entry is queued" stale 'request queued'
+
+{ jq -nc --arg t "$ASK" '{type: "api-request-blob", messages: [{role: "user", content: $t}]}'
+  jq -nc --arg t "$ASK" '{type: "user", message: {content: [{type: "tool_result", tool_use_id: "x", content: $t}]}}'
+  j_asst m1 end_turn text "$H"; } >"$T"
+expect "no-nonce: nonce only inside api-request-blob or a tool_result" no-nonce
+{ j_prompt "${ASK/N1/N0}"; j_asst m1 end_turn text "$H"; } >"$T"
+expect "no-nonce: other nonce" no-nonce
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"; } >"$T"
+expect "pending: answer ended but pane not idle" pending '' 0
+{ j_prompt "$ASK"; j_queued task-notification '<task-notification>a'; } >"$T"
+expect "pending: no answer yet" pending
+
+# a complete prompt still missing its \n: it would make the answer stale if it were read
+part=$(j_prompt 'พิมพ์ต่อ')
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"; printf '%s' "$part"; } >"$T"
+IFS=$'\t' read -r v e d < <(answer_state "$T" 0 N1 1 "$OUT")
+[[ "$v" == handoff && "$e" == $(($(wc -c <"$T") - $(printf '%s' "$part" | wc -c))) ]]
+check "partial last line: ignored, end offset before it" $?
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"; } >"$T"
+off=$(($(wc -c <"$T")))
+{ j_prompt 'อีกเรื่อง'; j_asst m2 end_turn text 'ตอบ'; } >>"$T"
+IFS=$'\t' read -r v e d < <(answer_state "$T" "$off" N1 1 "$OUT")
+[[ "$v" == no-nonce && "$e" == $(($(wc -c <"$T"))) ]]; check "offset in the middle: earlier nonce is not seen" $?
+
+{ j_prompt "$ASK"; j_asst m1 end_turn text "$H"; } >"$T.base"
+off=$(($(wc -c <"$T.base")))
+{ cat "$T.base"; j_routine; } >"$T"
+! activity_after "$T" "$off"; check "activity_after: routine only" $?
+for a in prompt queued assistant; do
+  { cat "$T.base"; j_routine
+    case $a in prompt) j_prompt 'ต่อ' ;; queued) j_queued prompt 'ต่อ' ;; assistant) j_asst m2 end_turn text 'ต่อ' ;; esac; } >"$T"
+  activity_after "$T" "$off"; check "activity_after: $a" $?
+done
+
 ((fails)) && { echo "$fails failed"; exit 1; }
 echo "all passed"
