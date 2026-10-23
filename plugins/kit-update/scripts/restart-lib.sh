@@ -25,7 +25,8 @@ ku_paths() {
 }
 
 ku_now() { if [[ -n "${KIT_UPDATE_CLOCK_BIN:-}" ]]; then "$KIT_UPDATE_CLOCK_BIN"; else date +%s; fi; }
-ku_nap() { "${KIT_UPDATE_SLEEP_BIN:-sleep}" "$1"; }
+# In braces: when a signal to the group ends the sleep, bash's notice of it ("Hangup: 1") goes to /dev/null too.
+ku_nap() { { "${KIT_UPDATE_SLEEP_BIN:-sleep}" "$1"; } 2>/dev/null; }
 
 # Append "YYYY-MM-DD HH:MM:SS  LABEL — MESSAGE" to $LOG, then echo it.
 ku_log() {
@@ -258,9 +259,10 @@ activity_after() { # FILE OFFSET
 # can't cut it halfway (then nobody knows whether its keys arrived). Output goes
 # to $LOG. Returns CMD's exit status. Job control is on only while CMD starts:
 # left on, the foreground commands get their own group and Ctrl-C misses the worker's trap.
+# wait's stderr is dropped: if CMD dies of a signal, bash prints "Terminated: 15 ..." there.
 run_detached() {
   local p
   set -m; "$@" </dev/null >>"$LOG" 2>&1 & p=$!; set +m
-  while kill -0 "$p" 2>/dev/null; do wait "$p"; done # a trap cuts wait short: wait again
-  wait "$p" # gone now; bash still has its exit status
+  while kill -0 "$p" 2>/dev/null; do wait "$p" 2>/dev/null; done # a trap cuts wait short: wait again
+  wait "$p" 2>/dev/null # gone now; bash still has its exit status
 }
