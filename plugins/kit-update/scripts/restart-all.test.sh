@@ -200,6 +200,10 @@ expect "handoff mentioning NOT-READY inside" handoff
 
 { j_prompt "$ASK"; j_asst m1 tool_use tool_use; } >"$T"
 expect "invalid: tool_use" invalid 'tool call'
+{ j_prompt "$ASK"; j_asst m1 tool_use tool_use
+  jq -nc '{type: "user", message: {content: [{type: "tool_result", tool_use_id: "x", content: "ok"}]}}'
+  j_asst m2 end_turn text "$H"; } >"$T"
+expect "invalid: tool call before a valid-looking handoff" invalid 'tool call'
 { j_prompt "$ASK"; j_synthetic; } >"$T"
 expect "invalid: api error" invalid 'api error'
 { j_prompt "$ASK"; j_asst m1 max_tokens text "$H"; } >"$T"
