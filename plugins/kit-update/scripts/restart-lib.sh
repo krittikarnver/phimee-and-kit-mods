@@ -107,6 +107,40 @@ lock_token() {
 # remove the winner's.
 lock_release() { [[ -n "$1" && "$(lock_token)" == "$1" ]] && rm -rf "${LOCK:?}"; }
 
+# How the lock dir DIR stands, from DIR/owner and DIR's mtime (a rename keeps it):
+#   running PANE  its worker's pid is alive and still runs the command in the owner file
+#   starting      "starting TOKEN", or no readable owner yet (just made), under 60 s old
+#   stale         anything else: the worker is gone, or it has been starting for 60 s
+lock_check() {
+  local l1= l2= tok= pid= pane= mt
+  { read -r l1; read -r l2; } 2>/dev/null <"$1/owner"
+  read -r tok pid pane <<<"$l1"
+  if [[ "$tok" != starting && "$pid" =~ ^[0-9]+$ && -n "$pane" ]]; then
+    [[ "$l2" == "cmd "* && "$(proc_field "$pid" args)" == "${l2#cmd }" ]] && { echo "running $pane"; return 0; }
+  else
+    mt=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null) # GNU, then BSD stat
+    [[ -n "$mt" ]] && (($(ku_now) - mt < 60)) && { echo starting; return 0; }
+  fi
+  echo stale
+}
+
+# Take over $LOCK after lock_check called it stale, and make it anew for TOKEN. The dir is
+# moved aside first (one caller can move a given dir), then checked again: between the
+# first check and the move, another caller may have taken it over or made a fresh one.
+# A dir that is no longer stale goes back, and is never deleted. 0 when $LOCK is now ours.
+lock_takeover() { # TOKEN
+  local aside="$LOCK.stale.$1"
+  if mv "$LOCK" "$aside" 2>/dev/null; then
+    if [[ "$(lock_check "$aside")" != stale ]]; then
+      # if a new $LOCK was made meanwhile, mv puts this one inside it: take it out, leave it aside
+      mv "$aside" "$LOCK" 2>/dev/null && [[ -d "$LOCK/${aside##*/}" ]] && mv "$LOCK/${aside##*/}" "$aside"
+      return 1
+    fi
+    rm -rf "${aside:?}"
+  fi
+  mkdir "$LOCK" 2>/dev/null
+}
+
 sf_path() { printf '%s\n' "$CFG/sessions/$1.json"; }
 sf_get() { jq -r ".$2 // empty" "$(sf_path "$1")" 2>/dev/null; }
 

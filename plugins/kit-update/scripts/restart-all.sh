@@ -46,8 +46,7 @@ trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 fail() { echo "Could not start the worker: $1. Nothing was restarted."; exit 1; }
 
-hhmmss() { date -r "$1" +%H%M%S 2>/dev/null || date -d "@$1" +%H%M%S; }     # BSD, then GNU date
-lock_mtime() { stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null; } # GNU, then BSD stat
+hhmmss() { date -r "$1" +%H%M%S 2>/dev/null || date -d "@$1" +%H%M%S; } # BSD, then GNU date
 
 # The ppid chain above PID, up to (not including) pid 1.
 ancestors() {
@@ -120,31 +119,22 @@ add() { # MUX PANE LABEL PID SHELL_PID AGENT_NAME FALLBACK_NAME
 
 # 1. lock
 take_lock() {
+  local s
   mkdir "$LOCK" 2>/dev/null && return 0
-  local l1= l2= tok= pid= pane= mt
-  { read -r l1; read -r l2; } 2>/dev/null <"$LOCK/owner"
-  read -r tok pid pane <<<"$l1"
-  if [[ "$tok" != starting && "$pid" =~ ^[0-9]+$ && -n "$pane" ]]; then
-    if [[ "$l2" == "cmd "* && "$(proc_field "$pid" args)" == "${l2#cmd }" ]]; then
-      echo "A restart is already running: its worker is in $pane. Log: $LOG"
-      exit 0
-    fi
-  else # starting, or so new that its owner file isn't written yet
-    mt=$(lock_mtime)
-    if [[ -n "$mt" ]] && (($(ku_now) - mt < 60)); then
-      echo "A restart is starting from another session; try again in a minute."
-      exit 0
-    fi
-  fi
-  # Stale. mv is atomic where rm -rf of a dir someone writes to is not; a caller that loses
-  # this race finds another token in the lock after writing its state, and stops.
-  mv "$LOCK" "$LOCK.stale.$TOKEN" 2>/dev/null && rm -rf "${LOCK:?}.stale.$TOKEN"
-  mkdir "$LOCK" 2>/dev/null && return 0
+  s=$(lock_check "$LOCK")
+  case "$s" in
+    running*) echo "A restart is already running: its worker is in ${s#running }. Log: $LOG"; exit 0 ;;
+    stale) lock_takeover "$TOKEN" && return 0 ;;
+  esac
   echo "A restart is starting from another session; try again in a minute."
   exit 0
 }
 take_lock
-printf 'starting %s\n' "$TOKEN" >"$LOCK/owner.$TOKEN" && mv -f "$LOCK/owner.$TOKEN" "$LOCK/owner" || exit 1
+# ln, not mv: it fails rather than replace an owner file that is already there (another caller's)
+printf 'starting %s\n' "$TOKEN" >"$LOCK/owner.$TOKEN" && ln "$LOCK/owner.$TOKEN" "$LOCK/owner" 2>/dev/null
+rc=$?
+rm -f "$LOCK/owner.$TOKEN"
+((rc == 0)) || { rmdir "$LOCK" 2>/dev/null; fail "could not write $LOCK/owner"; } # rmdir: only if still empty
 
 # 2. snapshot
 ROWS=() LIST=() SKIPPED=() SEEN=' ' issuer=0 have_tmux= have_herdr=

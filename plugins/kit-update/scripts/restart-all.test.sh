@@ -15,6 +15,7 @@
 #   $FAKE/ran         "<pane or session> <command>" per herdr pane run / tmux send-keys -l
 #   $FAKE/fail-launch                     makes herdr workspace create and tmux new-session fail
 #   $FAKE/hook-<cmd>                      sourced by the fake tmux before it answers <cmd>
+#   $FAKE/hook-ps                         sourced by the fake ps before it answers (remove it inside to run once)
 #   KIT_FAKE_REAL_SLEEP=<seconds>         real time each fake sleep takes (default 0.01)
 
 set -uo pipefail
@@ -28,6 +29,7 @@ echo 1000000 >"$FAKE/now"
 cat >"$FAKE/bin/ps" <<'EOF'
 #!/usr/bin/env bash
 # fake ps: rows from $FAKE/procs, in columns like macOS ps; answers only the forms restart-lib.sh uses
+[[ -f "$FAKE/hook-ps" ]] && . "$FAKE/hook-ps"
 case "$*" in
   "-o pid=,ppid=,pgid=,tpgid=,tty=,lstart=,args= -p "*)
     [[ "${TZ:-}" == UTC ]] || { echo "fake ps: lstart without TZ=UTC won't match procStart" >&2; exit 2; }
@@ -279,7 +281,7 @@ done
 # --- restart-all.sh: snapshot, state file, lock and worker launch
 # The worker is never run: the fake pane run and send-keys only record its command line in $FAKE/ran.
 reset_world() {
-  rm -rf "${CFG:?}/sessions" "${KU_DIR:?}" "${FAKE:?}"/{panes,agents,workspaces,tmux-calls,herdr-calls,ran,tmux-sessions,fail-launch,hook-list-panes}
+  rm -rf "${CFG:?}/sessions" "${KU_DIR:?}" "${FAKE:?}"/{panes,agents,workspaces,tmux-calls,herdr-calls,ran,tmux-sessions,fail-launch,hook-list-panes,hook-ps}
   mkdir -p "$CFG/sessions"
   : >"$FAKE/procs"
 }
@@ -442,6 +444,20 @@ lock_world
 touch "$FAKE/fail-launch"
 out=$(ra); rc=$?
 [[ $rc == 1 && ! -e "$LOCK" && "$(launches)" == 0 ]] && grep -q 'Could not start the worker' <<<"$out"; check "launch fails: lock removed" $?
+
+# A caller judged the lock stale, then another caller made a fresh one or its worker started,
+# before the move: lock_takeover runs here as that delayed caller would, after the swap.
+lock_world
+mkdir -p "$LOCK"; echo 'starting FRESH' >"$LOCK/owner"
+! lock_takeover LATE && [[ "$(lock_token)" == FRESH && ! -e "$LOCK.stale.LATE" ]]
+check "takeover that moved a fresh lock: puts it back, no lock of its own" $?
+lock_world
+mkdir -p "$LOCK"; printf 'TOKW 558 w8:p5\ncmd bash /x/restart-worker.sh /x/state.TOKW\n' >"$LOCK/owner"
+fake_proc 558 1 558 558 ttys022 'bash /x/restart-worker.sh /x/state.TOKW'
+echo "rm -f '$FAKE/hook-ps'; mkdir '$LOCK'" >"$FAKE/hook-ps" # a third caller makes a new lock during the check
+! lock_takeover LATE && [[ "$(head -1 "$LOCK.stale.LATE/owner")" == 'TOKW 558 w8:p5' && -d "$LOCK" && -z "$(ls -A "$LOCK")" ]]
+check "takeover that moved a running worker's lock while a new one was made: leaves it aside, deletes nothing" $?
+rm -rf "${LOCK:?}.stale.LATE"
 
 ((fails)) && { echo "$fails failed"; exit 1; }
 echo "all passed"
