@@ -66,7 +66,7 @@ ccc() {
 
 `cc` ใช้จากใน tmux ไม่ได้ (tmux ไม่ซ้อน session) ให้ใช้ `Ctrl-b s` แทน
 
-อัปเดต plugin แล้ว ใช้ `/kit-update:reload` พิมพ์ `/reload-plugins` ให้ทุก session ที่ว่างอยู่ได้ในคำสั่งเดียว (ต้องติดตั้ง kit-update)
+อัปเดต plugin แล้ว ใช้ `/kit-update:reload` พิมพ์ `/reload-plugins` ให้ทุก session ที่ว่างอยู่ได้ในคำสั่งเดียว หรือ `/kit-update:restart` เปิดทุก session ที่ว่างใหม่พร้อม handoff เพื่อให้ได้ Claude Code เวอร์ชันใหม่ (ต้องติดตั้ง kit-update)
 
 ## 5. ssh จากมือถือ (ไม่บังคับ)
 
@@ -141,7 +141,7 @@ ccc() {
    | เลือก workspace | `Ctrl-b w` |
    | กลับเข้า herdr | `herdr` |
 
-   `/kit-update:reload` ใช้กับ herdr ได้เหมือนกัน
+   `/kit-update:reload` และ `/kit-update:restart` ใช้กับ herdr ได้เหมือนกัน
 
 ## ใช้คู่กับ kit-checkpoint
 
