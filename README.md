@@ -55,13 +55,13 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 - `/kit-update:check-all-projects` และ `/kit-update:all-projects` ทำเหมือนกัน แต่รวม install ระดับ project/local ของ project อื่นด้วย (สองตัวแรกทำเฉพาะของ project ปัจจุบัน)
 - เสร็จแล้วพิมพ์ `/reload-plugins` เอง Claude สั่งแทนไม่ได้
 - `/kit-update:reload` พิมพ์ `/reload-plugins` ให้ทุก Claude session อื่นที่รันใน tmux หรือ [herdr](https://herdr.dev) และว่างอยู่ ข้าม session ที่กำลังทำงาน มีคำถามค้าง หรือพิมพ์ค้างไว้ (tmux อ่านจากหน้าจอทั้งหมด herdr ใช้สถานะที่ herdr รู้ แล้วอ่านหน้าจอแค่ช่องพิมพ์ ไม่แน่ใจก็ข้าม) session ที่สั่งต้องพิมพ์เอง ไม่ได้ใช้ tmux หรือ herdr ก็ทำอะไรไม่ได้
-- `/kit-update:restart` ปิดแล้วเปิด Claude session อื่นทุกตัวที่รันใน tmux หรือ herdr ใหม่ (เช่นหลังอัปเดต Claude Code) โดยพก handoff ไปเป็นข้อความแรก
+- `/kit-update:restart` ปิดแล้วเปิด Claude session ทุกตัวที่รันใน tmux หรือ herdr ใหม่ รวม session ที่สั่งด้วย (เช่นหลังอัปเดต Claude Code) โดยพก handoff ไปเป็นข้อความแรก
   - สคริปต์ถ่าย snapshot ของ session ที่มีตอนนั้น (ตัวที่เปิดทีหลังไม่นับ) แล้วเปิด worker ใน pane ของมันเอง (herdr: workspace ใหม่ / tmux: session `kit-update-restart-<เวลา>`) ที่เช็กทุก 10 วินาที
   - session ไหนว่าง worker จะพิมพ์คำขอ handoff ให้ Claude ตอบในแชท (ไม่เขียนไฟล์ ไม่เรียก tool) เก็บคำตอบลง `~/.claude/kit-update/handoffs/` แล้วพิมพ์ `/exit` และเปิด `claude --name <ชื่อเดิม> "<handoff>"` ใหม่ใน pane เดิม session นี้ไปหลังตัวอื่น
   - ทุก session ต้องส่ง context ทั้งก้อนเพื่อเขียน handoff จึงใช้ token (ขอพร้อมกันไม่เกิน 2 session)
   - log อยู่ที่ `~/.claude/kit-update/restart.log` และมี `Summary` ปิดท้ายทั้งใน log และใน pane ของ worker pane นั้นไม่ปิดเอง กิตปิดเอง
   - หยุดได้ด้วย Ctrl-C ใน pane ของ worker (หรือปิด pane นั้น) session ที่ได้รับ `/exit` ไปแล้วจะถูกเปิดใหม่ให้จบ ที่เหลือไม่ถูกแตะ
-  - ข้าม session ที่ทำงานอยู่ มีคำถามค้าง พิมพ์ค้างไว้ scroll ค้าง หรืออยู่ใน copy mode (รอจนว่าง) และข้ามถ้ายังไม่พร้อมเมื่อครบ 4 ชั่วโมง การตรวจ subagent, teammate, `/loop` และคำถามที่ยังไม่ได้ตอบเป็น best effort ไม่การันตี
+  - session ที่ทำงานอยู่ มีคำถามค้าง พิมพ์ค้างไว้ scroll ค้าง หรืออยู่ใน copy mode จะรอจนพร้อม และถูกข้ามถ้าครบ 4 ชั่วโมงแล้วยังไม่พร้อม การตรวจ subagent, teammate, `/loop` และคำถามที่ยังไม่ได้ตอบเป็น best effort ไม่การันตี
   - session ที่มี process เบื้องหลังรันตลอด (dev server, watcher) จะไม่ถูก restart และถูกข้ามหลัง 4 ชั่วโมง
   - session ที่ตอบว่า `NOT-READY` หรือไม่ได้ handoff ที่ใช้ได้ จะไม่ถูกปิด
   - flag ที่ใช้ตอนเปิด session เดิม (เช่น `--model`, `--dangerously-skip-permissions`) ไม่ตามไปด้วย log มีคำสั่งเดิมไว้ให้ ถ้า session เปิดไม่ขึ้น log มีบรรทัด `relaunch it yourself: <คำสั่ง>`
@@ -74,7 +74,7 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
   - ถ้าใช้ kit-scrutinize แบบ sync ต้อง sync `9arm-skills` ไปด้วย ไม่งั้น kit-scrutinize จะถูกปิดเพราะหา dependency ไม่เจอ
 - ถ้า plugin ที่ใช้ command source เปลี่ยน install command, Claude Code ไม่ให้ accept จากใน session จะได้คำสั่ง `--accept-command <sha256>` ไว้ review แล้วรันเองใน terminal
 
-ต้องใช้ Claude Code v2.1.268 ขึ้นไป และต้องมี `jq` รันจาก terminal ตรงๆ ก็ได้: `bash plugins/kit-update/scripts/update-all.sh --help` (`/kit-update:reload` คือ `scripts/reload-all.sh`, `/kit-update:restart` คือ `scripts/restart-all.sh`)
+ต้องใช้ Claude Code v2.1.268 ขึ้นไป (`/kit-update:restart` ต้องใช้ v2.1.308 ขึ้นไป เพราะอ่าน `status` และ `procStart` จาก session file ของ Claude Code) และต้องมี `jq` รันจาก terminal ตรงๆ ก็ได้: `bash plugins/kit-update/scripts/update-all.sh --help` (`/kit-update:reload` คือ `scripts/reload-all.sh`, `/kit-update:restart` คือ `scripts/restart-all.sh`)
 
 ### kit-checkpoint
 

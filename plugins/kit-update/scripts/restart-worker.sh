@@ -121,7 +121,13 @@ identity_ok() {
     && "$(sf_get "${PID[i]}" procStart)" == "${PROCSTART[i]}" ]] || return 1
   if [[ "${MUX[i]}" == herdr ]]; then
     l=$("$HERDR_BIN" agent list 2>/dev/null) || { why "$i" "herdr does not answer"; return 2; }
-    jq -e --arg p "${PANE_ID[i]}" 'any(.result.agents[]?; .pane_id == $p)' <<<"$l" >/dev/null 2>&1 || return 1
+    jq -e --arg p "${PANE_ID[i]}" '.result.agents | if type == "array" then any(.[]; .pane_id == $p) else error("no list") end' \
+      <<<"$l" >/dev/null 2>&1
+    case $? in
+      0) ;;
+      1) return 1 ;; # a list without the pane
+      *) why "$i" "herdr answer unreadable"; return 2 ;;
+    esac
   fi
   [[ "$g" == "$t" ]] || { why "$i" "not in front of its terminal (suspended?)"; return 2; }
 }
@@ -185,14 +191,17 @@ others_block() {
 # start, as the session is idle; 0 when it has none yet). Whether the keys arrived is not asked:
 # only the request showing up in the transcript, or the session turning busy, tells.
 send_request() {
-  local i=$1 n f t
+  local i=$1 n f t a
   own_lock
   SID[i]=$(sf_get "${PID[i]}" sessionId)
   if f=$(transcript_for "${SID[i]}"); then OFF[i]=$(($(wc -c <"$f"))); else OFF[i]=0; fi
   n=$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
   t="[kit-update restart $n]$REQUEST"
   printf '%s' "$t" >"$LOCK/request-$n.txt" # no \n at the end: tmux would paste it as a new line
-  NONCE[i]=$n ASKED[i]=$NOW BUSY[i]=0 PH[i]=asked
+  a=$(ku_now) # not NOW: a relaunch earlier in this tick may have taken 10 s
+  # A stop signal during the checks (it can kill the ps that looks for background shells): no new pane.
+  if ((STOPPING)); then finish "$i" skipped:stopped; return; fi
+  NONCE[i]=$n ASKED[i]=$a BUSY[i]=0 PH[i]=asked
   ku_log "${SHOWN[i]}" "asked for a handoff (request $n, its transcript read from byte ${OFF[i]})"
   if [[ "${MUX[i]}" == herdr ]]; then
     run_detached "$HERDR_BIN" agent prompt "${PANE_ID[i]}" "$t"
@@ -274,10 +283,9 @@ relaunch_line() { local LC_ALL=C; printf 'claude --name %q "$(cat %q)"' "${SNAME
 # command (too long for one line: skip it now, while Claude still runs), then type /exit. A tmux pane gets
 # remain-on-exit on first, so it stays when Claude was its process or its shell was sh -c.
 exit_pane() {
-  local i=$1 p=${PANE_ID[$1]} v
-  v=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) # the version it comes back as
+  local i=$1 p=${PANE_ID[$1]}
   START[i]=${HANDOFF[i]%.md}.start.md
-  printf "$HEAD"'\n\n%s\n\n%s\n' "${VERSION[i]:-?}" "${v:-?}" "$(cat "${HANDOFF[i]}")" "$FOOT" >"${START[i]}" \
+  printf "$HEAD"'\n\n%s\n\n%s\n' "${VERSION[i]:-?}" "$NEWV" "$(cat "${HANDOFF[i]}")" "$FOOT" >"${START[i]}" \
     || { finish "$i" "skipped:could not write ${START[i]}"; return; }
   LINE[i]=$(relaunch_line "$i")
   ku_log "${SHOWN[i]}" "relaunch command: ${LINE[i]} (it was started as: ${CMDLINE[i]})"
@@ -285,10 +293,11 @@ exit_pane() {
   own_lock
   if [[ "${MUX[i]}" == tmux ]]; then
     ROE[i]=$(tm show-options -p -v -t "$p" remain-on-exit 2>/dev/null) ROE_SET[i]=1
-    tm set-option -p -t "$p" remain-on-exit on 2>/dev/null
+    tm set-option -p -t "$p" remain-on-exit on 2>/dev/null \
+      || { restore_roe "$i"; finish "$i" "skipped:could not set remain-on-exit"; return; } # else a pane of Claude alone closes
   fi
   if ((STOPPING)); then restore_roe "$i"; finish "$i" skipped:stopped; return; fi
-  PH[i]=exiting EXITED[i]=$NOW
+  PH[i]=exiting EXITED[i]=$(ku_now) # not NOW: a relaunch earlier in this tick may have taken 10 s
   ku_log "${SHOWN[i]}" "sent /exit"
   if [[ "${MUX[i]}" == herdr ]]; then
     run_detached "$HERDR_BIN" agent prompt "$p" /exit
@@ -310,12 +319,15 @@ restore_roe() {
 }
 restore_all() { local i; for ((i = 0; i < N; i++)); do restore_roe "$i"; done; }
 
+# 0 when pane I's shell is back in front and nobody scrolls the pane; else WHY says which is not so.
+shell_ready() { proc_foreground "${SHELL_PID[$1]}" || { WHY[$1]="shell not in front"; return 1; }; not_scrolled "$1"; }
+
 # Pane I's Claude exited: start it again (spec §3 step 5). A tmux pane that died with it is respawned with
 # the command as argv, through no shell of the user's; else the shell that ran it must be back in front
-# (checked each second, 10 s at most), and the command is typed into it. herdr: the pane must still be
-# listed. Every key here is typed once; respawn-pane is tried twice, as it refuses a pane that runs anything.
+# (checked each second, 10 s at most), and the command is typed into it. herdr: a pane list without the pane
+# ends it as gone. Every key here is typed once; respawn-pane is tried twice, as it refuses a pane that runs anything.
 relaunch() {
-  local i=$1 p=${PANE_ID[$1]} t k
+  local i=$1 p=${PANE_ID[$1]} t k l
   PH[i]=relaunching
   ku_log "${SHOWN[i]}" "exited"
   if [[ "${MUX[i]}" == tmux && "$(tm display-message -p -t "$p" '#{pane_dead}' 2>/dev/null)" == 1 ]]; then
@@ -326,17 +338,22 @@ relaunch() {
     done
     RESPAWNED[i]=1
   else
-    if [[ "${MUX[i]}" == herdr ]] && ! "$HERDR_BIN" pane list 2>/dev/null \
-      | jq -e --arg p "$p" 'any(.result.panes[]?; .pane_id == $p)' >/dev/null 2>&1; then
+    # Gone only when herdr gives a list without the pane: an error or an unreadable answer is no proof.
+    if [[ "${MUX[i]}" == herdr ]] && l=$("$HERDR_BIN" pane list 2>/dev/null) && {
+      jq -e --arg p "$p" '.result.panes | if type == "array" then any(.[]; .pane_id == $p) else error("no list") end' \
+        <<<"$l" >/dev/null 2>&1
+      (($? == 1))
+    }; then
+      ku_log "${SHOWN[i]}" "relaunch it yourself: ${LINE[i]}"
       finish "$i" gone "gone: its pane closed after /exit"
       return
     fi
     t=$(ku_now)
-    until proc_foreground "${SHELL_PID[i]}" && not_scrolled "$i"; do
+    until shell_ready "$i"; do
       if (($(ku_now) - t >= 10)); then
         ku_log "${SHOWN[i]}" "relaunch it yourself: ${LINE[i]}"
         restore_roe "$i"
-        finish "$i" "skipped:shell not in front"
+        finish "$i" "skipped:${WHY[i]}"
         return
       fi
       ku_nap 1
@@ -359,7 +376,7 @@ new_claude() {
   local i=$1 top=${SHELL_PID[$1]} own= p a r=
   if ((RESPAWNED[i])); then top=$(tm display-message -p -t "${PANE_ID[i]}" '#{pane_pid}' 2>/dev/null) own=$top; fi
   for p in $own $(proc_children "$top" | cut -d' ' -f1); do
-    [[ -f "$(sf_path "$p")" ]] && { echo session; return; }
+    [[ -f "$(sf_path "$p")" ]] && proc_alive "$p" && { echo session; return; } # a dead pane's pid may have left one
     a=$(proc_field "$p" args); a=${a%% *}
     [[ "${a##*/}" == claude ]] && r=process
   done
@@ -392,8 +409,9 @@ step() {
   local i=$1 id start
   SLOTWAIT[i]=0
   case ${PH[i]} in # past /exit: the pid is meant to go, no cap, and stopping lets it finish (spec §3 steps 4–6)
-    exiting)
-      if [[ "$(proc_field "${PID[i]}" start)" != "$(tr -s ' ' <<<"${PROCSTART[i]}")" ]]; then
+    exiting) # a ps cut short by a signal reads as gone too: ask a second time before relaunching
+      start=$(proc_field "${PID[i]}" start) || start=$(proc_field "${PID[i]}" start)
+      if [[ "$start" != "$(tr -s ' ' <<<"${PROCSTART[i]}")" ]]; then
         relaunch "$i"
       elif ((NOW - EXITED[i] >= 60)); then
         restore_roe "$i"
@@ -452,6 +470,11 @@ STOPPING=0
 trap 'STOPPING=1' INT TERM
 trap 'STOPPING=1; trap "" PIPE; exec >/dev/null 2>&1' HUP
 trap restore_all EXIT # own_lock's exit too
+
+# The version the sessions come back as, for the start files' header. Once, here: Node takes a while
+# to start, and between a pane's last check and its /exit no time should be lost.
+NEWV=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+NEWV=${NEWV:-?}
 
 T0=$(ku_now) ISSUER_FROM=
 ku_log worker "started for $N session(s)"
