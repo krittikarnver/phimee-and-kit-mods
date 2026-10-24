@@ -112,6 +112,8 @@ add() { # MUX PANE LABEL PID SHELL_PID AGENT_NAME FALLBACK_NAME
     [[ -n "$(sf_get "$4" "$k")" ]] || { skip "$shown" "its session file has no $k"; return; }
   done
   args=$(proc_field "$4" args)
+  # A Claude a restart relaunched has the handoff on its command line: any text, and kilobytes of it for the log.
+  [[ "$args" == *" [kit-update restart] "* ]] && args="${args%%" [kit-update restart] "*} <kit-update handoff>"
   case " $args" in
     *" --team-name"* | *" --agent-id"* | *" --parent-session-id"*) skip "$shown" "teammate of an agent team"; return ;;
   esac

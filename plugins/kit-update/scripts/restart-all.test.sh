@@ -517,6 +517,14 @@ lock_world() {
 }
 old_lock() { touch -t 202001010000 "$LOCK"; } # mtime far older than 60 s
 
+# A Claude a restart relaunched has its first message, the handoff, on its command line.
+lock_world
+fake_kill 132
+fake_proc 132 131 132 132 ttys003 'claude --name gamma [kit-update restart] handoff จาก session ก่อน restart (Claude Code 1 → 2) ส่ง --team-name ไปด้วย'
+rm -rf "${LOCK:?}"; out=$(ra)
+[[ "$(row 132 | cut -f15)" == 'claude --name gamma <kit-update handoff>' ]]
+check "relaunched with a handoff: the handoff is cut from its command line (no teammate match, no handoff in the log)" $?
+
 lock_world
 out=$(TMUX="$FAKE/sock,1,0" ra)
 grep -q "^-S $FAKE/sock new-session -d -s kit-update-restart-[0-9]\{6\} -c $KU_DIR\$" "$FAKE/tmux-calls" \

@@ -100,7 +100,7 @@ Claude Code อัปเดตบ่อย แต่ session ที่เปิ�
    แล้วกรอง:
    - pane ซ้ำ (pid ของ Claude เดียวกัน): **เก็บฝั่ง tmux** และตัด agent ของ herdr ที่ Claude มี tmux เป็นบรรพบุรุษทิ้งเสมอ ถึงฝั่ง tmux จะไม่ได้อยู่ในรายการก็ตาม
    - process ที่ยังอยู่สองตัวใช้ `sessionId` เดียวกัน (เช่นสอง pane รัน `claude --continue` บน session เดียวกัน): ข้ามทั้งคู่ ทั้ง tmux และ herdr เพราะเขียน transcript ไฟล์เดียวกัน
-   - teammate ของ agent team: ข้าม
+   - teammate ของ agent team: ข้าม ดูจาก args ที่ตัด handoff ของ restart รอบก่อนออกแล้ว (ตั้งแต่ ` [kit-update restart] ` ไปจนจบ เหลือ `<kit-update handoff>` แทน) เพราะ handoff เป็นข้อความอะไรก็ได้ และ args นี้ลง log ด้วย
    - session file ที่ `kind` ไม่ใช่ `interactive` (เช่น `claude -p`): ข้าม
    - session file ที่ไม่มี `status`, `statusUpdatedAt` หรือ `procStart` (เวอร์ชันเก่าอาจไม่มี ยืนยันแค่ 2.1.308): ข้ามพร้อมเหตุผล
    - herdr: ผูก pane กับ Claude ตอน snapshot ด้วย `agent_session.value` = `sessionId` แล้วใช้ pid จากนั้นตลอด ถ้า pane id หายไปจาก `agent list` (เช่นถูก `pane move`) ถือว่า "gone"
@@ -290,8 +290,18 @@ Claude Code อัปเดตบ่อย แต่ session ที่เปิ�
 - เจอและแก้แล้ว: JSON ที่ herdr ตอบกลับไปปนใน log, workspace ของ worker ใน herdr ไม่ได้ตั้ง cwd, เหตุผลตอนข้ามเมื่อไม่เจอ process ของ session
 - ข้อจำกัด: herdr รู้ session id จาก hook `SessionStart` ที่ `herdr integration install claude` ใส่ไว้ใน config Claude ที่ใช้ `CLAUDE_CONFIG_DIR` อื่นที่ไม่มี hook นี้ถูกข้ามด้วยเหตุผล `herdr shows no session id` (README บอกไว้)
 - ข้อสังเกต: ใน tmux ช่วงที่ Claude เพิ่งเปิด Enter ที่ส่งตามข้อความไม่ทำให้ส่ง ภายหลังส่งได้ปกติ worker ไม่ส่งอะไรตอน Claude เพิ่งเปิด จึงไม่กระทบ
-- ข้อสังเกต: บรรทัด `relaunch command` ใน log ต่อท้าย "it was started as" ด้วย argv ของรอบก่อน หลัง restart ไปแล้วหนึ่งครั้งจึงพก handoff ทั้งก้อนมาด้วย
+- เจอและแก้แล้ว (0.2.1): Claude ที่ restart เปิดใหม่มี handoff ทั้งก้อนอยู่ใน argv (`ps` รวมเป็นบรรทัดเดียว ราว 6 KB) บรรทัด `relaunch command` ใน log จึงพก handoff มาทั้งก้อนตรง "it was started as" และถ้า handoff มี ` --team-name`, ` --agent-id` หรือ ` --parent-session-id` session นั้นจะถูกข้ามเป็น teammate ในรอบถัดไป ตอนนี้ snapshot ตัดส่วนนั้นทิ้งก่อน (ข้อ 2)
 - วิธีทดสอบ: worker รันใน pane ของ herdr จึงไม่เห็น env ของตัวสั่ง (`KIT_UPDATE_TMUX_BIN` ไม่ตามไป) tmux server แยกต้องส่ง socket ผ่าน `TMUX=<socket path>,0,0` ตอนรัน `restart-all.sh` เพื่อให้ socket ลงไปใน state
+
+## ผลการทดสอบ subagent เบื้องหลัง (24 ต.ค. 2569, Claude Code 2.1.310, Opus 5.5)
+
+ไม่ได้รัน worker ใช้ Claude หนึ่งตัวใน tmux server แยก สั่งให้ปล่อย subagent ด้วย `Agent` แบบ `run_in_background` แล้วจบ turn จากนั้นวางข้อความขอ handoff ตรงตัวจาก `restart-worker.sh` แบบเดียวกับ worker (`load-buffer` + `paste-buffer -p` + Enter) ปิดและลบหมดแล้ว
+
+- subagent ที่ย้ายงานของตัวเองไปเป็น background Bash: `status` เป็น `shell` worker รอโดยไม่ถามอยู่แล้ว ถามเองก็ได้ `NOT-READY: subagent ที่รัน ... ยังไม่จบ` ไม่เรียก tool
+- subagent ที่ทำงานโดยไม่มี shell (เขียนคำตอบยาว ไม่เรียก tool): `status` เป็น `idle` และ `bg_shells` ว่าง worker มองไม่เห็นจริง ถามแล้วได้ `NOT-READY: subagent ... ยังทำงานอยู่เบื้องหลัง` ทันที ไม่เรียก tool พอ subagent จบ task notification เข้ามาเป็น turn ใหม่ (ตามกติกา `NOT-READY`: รอความเคลื่อนไหวแล้วถามใหม่)
+- ลองแค่ Opus 5.5 ยังเป็น best effort ตามเดิม
+- ข้อสังเกต: Bash tool ไม่ยอมรัน `sleep` ยาวแบบรันหน้า subagent ที่สั่งแบบนั้นจบเร็ว ใช้ทดสอบไม่ได้
+- ข้อสังเกต: `claude` ที่ไม่มี argument ใน 2.1.310 เปิดหน้ารวม session ("describe a task for a new session") ก่อนเข้าแชท คำสั่งเปิดใหม่ของ worker ส่ง handoff เป็น argument เสมอ จึงไม่ผ่านหน้านี้
 
 ## วิธีทดสอบ
 
