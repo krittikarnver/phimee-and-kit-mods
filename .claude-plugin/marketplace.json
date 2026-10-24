@@ -23,7 +23,7 @@
     {
       "name": "kit-update",
       "source": "./plugins/kit-update",
-      "description": "/kit-update:all อัปเดต plugin ทุกตัวที่ติดตั้งไว้ในคำสั่งเดียว แล้วสรุปว่าตัวไหนเปลี่ยน version"
+      "description": "/kit-update:all อัปเดต plugin ทุกตัวที่ติดตั้งไว้ในคำสั่งเดียว แล้วสรุปว่าตัวไหนเปลี่ยน version ส่วน /kit-update:restart เปิด Claude session ใน tmux หรือ herdr ใหม่ตอนว่าง พร้อม handoff เป็นข้อความแรก"
     },
     {
       "name": "kit-checkpoint",

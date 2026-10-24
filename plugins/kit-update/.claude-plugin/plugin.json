@@ -1,7 +1,7 @@
 {
   "name": "kit-update",
-  "version": "0.1.4",
-  "description": "/kit-update:all อัปเดต plugin ทุกตัวที่ติดตั้งไว้ในคำสั่งเดียว refresh marketplace ก่อน แล้วสรุปว่าตัวไหนเปลี่ยน version",
+  "version": "0.2.0",
+  "description": "/kit-update:all อัปเดต plugin ทุกตัวที่ติดตั้งไว้ในคำสั่งเดียว refresh marketplace ก่อน แล้วสรุปว่าตัวไหนเปลี่ยน version ส่วน /kit-update:restart เปิด Claude session ใน tmux หรือ herdr ใหม่ตอนว่าง พร้อม handoff เป็นข้อความแรก",
   "author": {
     "name": "Kit"
   }

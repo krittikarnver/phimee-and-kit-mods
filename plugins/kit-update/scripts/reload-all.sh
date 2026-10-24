@@ -29,8 +29,7 @@ else
   B=; G=; N=
 fi
 
-# The input box is the last ❯ line; empty, or showing only its "Try …" hint.
-prompt_empty() { grep -E '^❯' <<<"$1" | tail -1 | grep -qE '^❯[[:space:]]*($|Try ")'; }
+source "$(dirname "$0")/pane-lib.sh"
 
 reloaded=() skipped=() found=0
 
@@ -46,19 +45,12 @@ if panes=$("$TMUX_BIN" list-panes -a -F '#{pane_id}	#{session_name}:#{window_ind
       continue
     fi
 
-    screen=$("$TMUX_BIN" capture-pane -p -t "$id" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -15)
-    if grep -qE '…[[:space:]]*\([0-9]|esc to interrupt' <<<"$screen"; then
-      skipped+=("$name — busy")
-      continue
-    fi
-    if grep -qE 'Do you want|Enter to confirm|Esc to cancel' <<<"$screen"; then
-      skipped+=("$name — waiting on a question")
-      continue
-    fi
-    if ! prompt_empty "$screen"; then
-      skipped+=("$name — prompt not empty or not found")
-      continue
-    fi
+    screen=$("$TMUX_BIN" capture-pane -p -e -t "$id" 2>/dev/null | screen_tail)
+    case "$(screen_state "$screen")" in
+      busy) skipped+=("$name — busy"); continue ;;
+      question) skipped+=("$name — waiting on a question"); continue ;;
+      draft) skipped+=("$name — prompt not empty or not found"); continue ;;
+    esac
 
     "$TMUX_BIN" send-keys -t "$id" -l '/reload-plugins' && "$TMUX_BIN" send-keys -t "$id" Enter \
       && reloaded+=("$name") || skipped+=("$name — send-keys failed")
@@ -80,7 +72,7 @@ if agents=$("$HERDR_BIN" agent list 2>/dev/null); then
       *) skipped+=("$name — state $state"); continue ;;
     esac
 
-    screen=$("$HERDR_BIN" agent read "$id" --source visible 2>/dev/null | grep -v '^[[:space:]]*$' | tail -15)
+    screen=$("$HERDR_BIN" agent read "$id" --source visible --format ansi 2>/dev/null | screen_tail)
     if ! prompt_empty "$screen"; then
       skipped+=("$name — prompt not empty or not found")
       continue
