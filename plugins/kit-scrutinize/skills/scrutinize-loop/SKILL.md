@@ -40,3 +40,6 @@ Run this loop in the main conversation. You edit the file; the subagent only rev
 
 Short table, one row per round: blocker / major / nit, verdict, main fixes.
 Then list remaining non-blocker findings and any rejected findings with reasons.
+
+Then run the `explain` skill (it may be listed as `kit-scrutinize:explain`) on the same
+file, so the user can check the result against what they decided.

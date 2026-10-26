@@ -9,7 +9,7 @@ A Claude Code plugin marketplace (`.claude-plugin/marketplace.json`) with one fo
 There are two kinds of plugin here:
 
 - **Hooks-module mods** (`kit-time`, `kit-usage`, `kit-checkpoint`). `hooks/hooks.json` is `{ "modules": ["./register.tsx"] }` (`./register.ts` in `kit-checkpoint`, which has no UI), and the module exports `register: Register` from `'claude-code'`. The module runs in the engine's own sandbox with no Node and no DOM, so everything goes through `$` (`$.session.usage()`, `$.clock`, `$.store`, `$.fs`, `$.ui`). JSX renders through `$.ui.resolve(e)`.
-- **Markdown plugins** (`kit-scrutinize`: skill + agent; `kit-update`: commands that run `scripts/update-all.sh`, `scripts/reload-all.sh` and `scripts/restart-all.sh`).
+- **Markdown plugins** (`kit-scrutinize`: skills `scrutinize-loop` and `explain` + agent, and `scripts/user-said.sh`, which `explain` runs to pull what the user typed out of transcripts; `kit-update`: commands that run `scripts/update-all.sh`, `scripts/reload-all.sh` and `scripts/restart-all.sh`).
 
 ## Commands
 
@@ -21,6 +21,7 @@ tsc -p ./plugins/<name>                   # type-check; only works after the eng
 bash plugins/kit-update/scripts/update-all.sh --dry-run   # KIT_UPDATE_CLAUDE_BIN=<fake> to stub the claude CLI
 bash plugins/kit-update/scripts/reload-all.test.sh       # self-check for reload-all.sh against a fake tmux and herdr (KIT_UPDATE_TMUX_BIN, KIT_UPDATE_HERDR_BIN)
 bash plugins/kit-update/scripts/restart-all.test.sh      # self-check for restart-all.sh and restart-worker.sh against a fake tmux and herdr (~45 s)
+bash plugins/kit-scrutinize/scripts/user-said.test.sh   # self-check for user-said.sh against a fake CLAUDE_CONFIG_DIR and git repo
 ```
 
 ## Mod conventions
