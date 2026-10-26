@@ -18,7 +18,7 @@
     {
       "name": "kit-scrutinize",
       "source": "./plugins/kit-scrutinize",
-      "description": "/scrutinize-loop รีวิว spec หรือ plan ซ้ำด้วย subagent จนไม่เหลือ blocker และ major (ติดตั้ง 9arm-skills ให้อัตโนมัติ)"
+      "description": "/scrutinize-loop รีวิว spec หรือ plan ซ้ำด้วย subagent จนไม่เหลือ blocker และ major แล้ว /kit-scrutinize:explain สรุปให้อ่านจบในหน้าจอเดียว (ติดตั้ง 9arm-skills ให้อัตโนมัติ)"
     },
     {
       "name": "kit-update",
