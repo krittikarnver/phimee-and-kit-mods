@@ -13,13 +13,14 @@ function world(on: On) {
     tokens: 450_000 as number | undefined, sid: 'sid-1', startedAt: 1,
     rate: [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 10 }],
     agents: [] as { id: string; status: AgentStatus }[],
-    files: new Map<string, string>(), commands: [] as string[], submits: [] as string[], notes: [] as string[], specs: [] as unknown[],
+    files: new Map<string, string>(), commands: [] as string[], submits: [] as string[], notes: [] as string[], specs: [] as unknown[], cmds: [] as string[],
     toolsRan: [] as string[], git: true, clear: 'works' as 'works' | 'noop' | 'reject', submit: 'ok' as 'ok' | 'drop',
     holdWrite: 0, holdClear: 0, holdList: 0, usageThrows: false, writeThrows: false,
   }
   const clock = mock.clock(on, { now: T0 })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('tool.register', async (_$, e) => { w.specs.push(e); return { value: { tool: e.name } } })
+  on('command.register', async (_$, e) => { w.cmds.push(e.name); return { value: { command: e.name } } })
   on('session.usage', async () => {
     if (w.usageThrows) throw new Error('usage')
     return { value: { startedAt: w.startedAt, context: { tokens: w.tokens, window: 1_000_000 }, rateLimits: w.rate } }
@@ -73,6 +74,11 @@ const done = ($: Engine, turnId: string, isAborted = false) =>
 const bash = ($: Engine, agentId?: string) => $.tool.call({ tool: 'Bash', command: 'ls', agentId } as { tool: 'Bash'; command: string })
 const handoff = ($: Engine, mode = 'auto', content = '# งาน\nขั้นต่อไป: X') => $.tool.call({ tool: TOOL, content, mode, reason: 'ทดสอบ' })
 const ctx = (r: { context?: readonly string[] }) => (r.context ?? []).join('\n')
+const checkpoint = ($: Engine) =>
+  $.command.run({ command: 'kit-checkpoint', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+// turn.start of a plugin's prompt: the engine wraps the text (seen on 2.1.312)
+const pluginTurn = ($: Engine, text: string, turnId: string) =>
+  $.turn.start({ text: `The kit-checkpoint plugin sent a message:\n${text}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns.`, turnId })
 
 test('warns at 400K, again at +25K, hard at 500K', async ($, on) => {
   const { w } = world(on)
@@ -121,6 +127,38 @@ test('registers the tool up front', async ($, on) => {
   const { w } = world(on)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
   expect(w.specs).toEqual([expect.objectContaining({ name: 'handoff', isDeferred: false })])
+  expect(w.cmds).toEqual(['kit-checkpoint'])
+})
+
+test('/kit-checkpoint below 400K: asks for the handoff, then clears and carries on', async ($, on) => {
+  const { w, clock } = world(on)
+  w.tokens = 100_000
+  expect((await checkpoint($)).text).toBe(MSG.manualOutput)
+  await clock.settle()
+  expect(w.submits).toEqual([MSG.manual])
+  await pluginTurn($, MSG.manual, 'T1')
+  await step($, 'T1')
+  expect((await handoff($)).result).toBe(MSG.saved(P1))
+  await done($, 'T1'); await clock.settle()
+  expect(w.commands).toEqual(['clear'])
+  expect(w.submits[1]).toContain(MSG.goOn)
+})
+
+test('/kit-checkpoint lasts one turn', async ($, on) => {
+  const { w, clock } = world(on)
+  w.tokens = 100_000
+  await checkpoint($); await clock.settle()
+  await pluginTurn($, MSG.manual, 'T1'); await step($, 'T1'); await done($, 'T1')
+  await $.turn.start({ text: 'อีกเรื่อง', turnId: 'T2' }); await step($, 'T2')
+  expect((await handoff($)).result).toBe(MSG.notYet)
+})
+
+test('a prompt queued ahead of the /kit-checkpoint one keeps the 400K check', async ($, on) => {
+  const { w, clock } = world(on)
+  w.tokens = 100_000
+  await checkpoint($); await clock.settle()
+  await $.turn.start({ text: 'คิวไว้ก่อน', turnId: 'T1' }); await step($, 'T1')
+  expect((await handoff($)).result).toBe(MSG.notYet)
 })
 
 test('saves the file and answers', async ($, on) => {
