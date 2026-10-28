@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Next, Register, SessionUsage, ToolCallInput, ToolCallResult } from 'claude-code'
 
 import {
-  BURN_CALLS, BUSY, MSG, SOFT, TOOL, TOOL_NAME,
+  BURN_CALLS, BUSY, COMMAND, MSG, SOFT, TOOL, TOOL_NAME,
   burn, guard, handoffDoc, handoffPath, pickLimits, refusal, resetsGen, startText, warnLevel, warnText,
 } from './logic'
 import type { Mode, Rate, Verdict } from './logic'
@@ -42,6 +42,9 @@ const fresh = () => ({
   aborted: [] as string[],
   // A stale-handoff line waiting for the next result or prompt to carry it.
   note: null as string | null,
+  // The user typed /kit-checkpoint, and the turn of the prompt it sent: that turn's handoff skips the 400K and just-cleared checks.
+  asked: false,
+  manualTurn: undefined as string | undefined,
 })
 
 // Module state; register() starts it over, as a reload starts the module's variables over.
@@ -52,7 +55,7 @@ const TOOL_SPEC = {
   isDeferred: false,
   description:
     'บันทึก handoff ลง .git แล้ว /clear บทสนทนานี้ตอนจบ turn และส่ง handoff เป็นข้อความแรกของบทสนทนาใหม่ ' +
-    'เรียกเฉพาะหลังได้คำเตือน [kit-checkpoint] เท่านั้น ต้องเป็น tool call เดียวของข้อความนั้น และเรียกแล้วให้จบ turn ทันที ' +
+    'เรียกเฉพาะหลังได้คำเตือนหรือคำสั่ง [kit-checkpoint] เท่านั้น ต้องเป็น tool call เดียวของข้อความนั้น และเรียกแล้วให้จบ turn ทันที ' +
     'content ต้องมีหัวข้อ: เป้าหมาย / ทำเสร็จแล้ว / ค้างอยู่ตรงไหน / ตัดสินใจอะไรไปแล้วและเพราะอะไร / ไฟล์ที่เกี่ยวข้อง / ขั้นต่อไป ' +
     'agent ที่ตั้งชื่อไว้และรอข้อความอยู่จะหายไปตอน clear จึงห้ามเขียนให้บทสนทนาใหม่ส่ง SendMessage หา agent พวกนั้น',
   inputSchema: {
@@ -129,6 +132,7 @@ async function handoffCall($: EngineInterface, e: ToolCallInput, next: Next<'too
     tools: s.tools,
     prompts: s.prompts,
     busyAgents,
+    manual: turnId !== undefined && turnId === s.manualTurn,
   })
   if (no) return { result: no }
 
@@ -230,8 +234,16 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     await registerTool($)
+    await $.command.register({ name: COMMAND, description: 'เขียน handoff ลง .git แล้ว clear ตอนนี้เลย ไม่ต้องรอ context ถึง 400K' })
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  on('command.run', { command: COMMAND }, async $ => {
+    s.asked = true
+    // Submitting from inside command.run would wait on the turn this hook holds, so do it after.
+    $.clock.after(0, () => void $.prompt.submit({ text: MSG.manual }).catch(() => {}))
+    return { text: MSG.manualOutput }
+  })
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId === undefined) {
@@ -246,6 +258,11 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
+    // Only the turn of the prompt /kit-checkpoint sent, not one queued ahead of it; the engine wraps a plugin's text.
+    if (e.agentId === undefined && s.asked && e.text.includes(MSG.manual)) {
+      s.asked = false
+      s.manualTurn = e.turnId
+    }
     if (e.agentId === undefined && s.rec && s.rec.turnId !== e.turnId) {
       // Someone else's turn got in before the clear ran: it will be cleared away, so quote it after.
       if (s.rec.phase === 'committed' && !s.rec.cleared) {

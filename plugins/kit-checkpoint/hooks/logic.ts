@@ -6,6 +6,7 @@ export const STEP = 25_000
 export const BURN_CALLS = 10
 export const TOOL_NAME = 'handoff'
 export const TOOL = 'mcp__kit-checkpoint__handoff'
+export const COMMAND = 'kit-checkpoint'
 export const MAX_AUTO_GEN = 5
 export const RATE_MAX_AGE_MS = 15 * 60_000
 export const BUSY: readonly string[] = ['pending', 'running', 'waiting']
@@ -27,6 +28,8 @@ export type CallFacts = {
   tools: number
   prompts: number
   busyAgents: number
+  // The user typed /kit-checkpoint for this turn.
+  manual?: boolean
 }
 export type Verdict = { auto: true } | { auto: false; blocked?: string }
 export type StartInput = { gen: number; path: string; content: string; reason: string }
@@ -57,6 +60,8 @@ export const MSG = {
   goOn: 'ตรวจสภาพจริงก่อน (git status, test ที่เกี่ยวข้อง) แล้วทำต่อจาก "ขั้นต่อไป"',
   stay: (r: string) => `ห้ามแก้อะไร สรุปสั้น ๆ ว่าค้างตรงไหนและรอให้ผู้ใช้ตัดสินใจเรื่องอะไร${r.trim() ? ` (${r})` : ''} แล้วรอ`,
   overwrittenBlock: 'มีข้อความถูก clear ทับ',
+  manual: '[kit-checkpoint] ผู้ใช้สั่ง /kit-checkpoint: เรียก tool handoff ตอนนี้เลย ใช้ mode auto ยกเว้นขั้นต่อไปต้องรอผู้ใช้ตัดสินใจ ให้ใช้ wait',
+  manualOutput: 'ให้ Claude เขียน handoff แล้ว จบ turn นั้นเมื่อไหร่จะ clear แล้วทำต่อในบทสนทนาใหม่',
 }
 
 /** Warn on first crossing 400K, again every +25K since the last warning, and at once on crossing 500K. */
@@ -85,8 +90,8 @@ export const warnText = (level: Level, tokens: number, b: Burn | null): string =
 export const refusal = (f: CallFacts): string | null => {
   if (f.agentId !== undefined) return MSG.fromSubagent
   if (typeof f.content !== 'string' || f.content.trim() === '') return MSG.noContent
-  if (f.tokens === undefined || f.tokens < SOFT) return MSG.notYet
-  if (f.quiet) return MSG.justCleared
+  if (!f.manual && (f.tokens === undefined || f.tokens < SOFT)) return MSG.notYet
+  if (!f.manual && f.quiet) return MSG.justCleared
   if (f.phase !== 'none') return MSG.already
   if (f.tools > 0) return MSG.siblings
   if (f.prompts > 0) return MSG.promptArrived

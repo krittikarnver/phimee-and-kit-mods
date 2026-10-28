@@ -28,7 +28,7 @@
     {
       "name": "kit-checkpoint",
       "source": "./plugins/kit-checkpoint",
-      "description": "เตือน Claude ตอน context เกิน 400K/500K ให้เขียน handoff แล้ว /clear และทำงานต่อเองในบทสนทนาใหม่"
+      "description": "เตือน Claude ตอน context เกิน 400K/500K ให้เขียน handoff แล้ว /clear และทำงานต่อเองในบทสนทนาใหม่ หรือสั่งเองได้ทุกเมื่อด้วย /kit-checkpoint"
     },
     {
       "name": "9arm-skills",

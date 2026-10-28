@@ -47,6 +47,15 @@ test('refusal reasons in order', () => {
   expect(refusal({ ...ok, agentId: 'a1', tokens: 1 })).toBe(MSG.fromSubagent)
 })
 
+test('/kit-checkpoint skips only the 400K and just-cleared checks', () => {
+  const m = { ...ok, manual: true }
+  expect(refusal({ ...m, tokens: 10_000 })).toBeNull()
+  expect(refusal({ ...m, tokens: undefined })).toBeNull()
+  expect(refusal({ ...m, quiet: true })).toBeNull()
+  expect(refusal({ ...m, tools: 1 })).toBe(MSG.siblings)
+  expect(refusal({ ...m, agentId: 'a1' })).toBe(MSG.fromSubagent)
+})
+
 test('limits: current, fresh cache, stale cache', () => {
   expect(pickLimits(both, null, now)).toBe(both)
   expect(pickLimits([], { limits: both, at: now - 14 * 60_000 }, now)).toBe(both)
