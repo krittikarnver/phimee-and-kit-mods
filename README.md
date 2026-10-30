@@ -13,6 +13,7 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 /plugin install kit-scrutinize@phimee-and-kit-mods
 /plugin install kit-update@phimee-and-kit-mods
 /plugin install kit-checkpoint@phimee-and-kit-mods
+/plugin install kit-recap@phimee-and-kit-mods
 ```
 
 เลือกติดตั้งเฉพาะตัวที่อยากใช้ก็ได้ แต่ละตัวทำงานแยกกัน
@@ -101,6 +102,16 @@ limit หมดเร็วเพราะขนาดของ context ไม�
 - ใน worktree ไฟล์อยู่ใต้ `.git/worktrees/<ชื่อ>/kit-handoff/` จึงหายไปพร้อม `git worktree remove`
 - Workflow, Bash background และ Monitor ยังทำงานต่อหลัง `/clear` ผลหรือ event ของพวกนี้จะเข้ามาในบทสนทนาใหม่ Claude จะรายงานให้รู้แต่ไม่ลงมือทำตาม ถ้า event เข้ามาหลังเขียน handoff แล้วจะยกเลิก clear และ Claude จะเรียก handoff ใหม่
 - agent ที่ตั้งชื่อไว้และรอข้อความอยู่ (idle) จะถูกปิดตอน `/clear` และส่ง SendMessage หาไม่ได้อีก
+
+### kit-recap
+
+กลับมาที่ session แล้วจำไม่ได้ว่าคุยกันถึงไหน `/recap` ที่มากับ Claude Code สรุปให้บรรทัดเดียว ตัวนี้ย้อนให้ละเอียดกว่านั้น
+
+- `/kit-recap:recap` สรุปจากบทสนทนาใน session นี้ อ่านอย่างเดียว ไม่เรียก tool ไม่แก้ไฟล์
+- ตอบสามส่วน: ตอนนี้อยู่ตรงไหนและรอผู้ใช้ทำอะไร, ย้อนจาก turn ล่าสุดไป 5 turn (ใหม่ไปเก่า turn ละบรรทัด แยกสิ่งที่ผู้ใช้ตัดสินใจเองออกจากที่ Claude เลือก), และเรื่องที่ยังค้างไม่เกิน 4 ข้อ
+- turn คือข้อความที่ผู้ใช้พิมพ์เองกับทุกอย่างที่ Claude ทำตอบ ข้อความที่ plugin ส่งแทน (handoff ของ kit-checkpoint, คำขอ restart ของ kit-update) และ notification ไม่นับเป็น turn
+- ถ้าบทสนทนาเริ่มจาก handoff หรือโดน compact มา จะสรุปเท่าที่เห็น แล้วบอกว่าก่อนหน้านั้นรู้แค่จากสรุป
+- ถามเป็นประโยคธรรมดาก็ได้ เช่น "เมื่อกี้คุยถึงไหนแล้ว" Claude อาจเรียก skill นี้เอง
 
 ## ใช้ Claude Code ผ่าน tmux หรือ herdr + Remote Control
 

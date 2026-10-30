@@ -31,6 +31,11 @@
       "description": "เตือน Claude ตอน context เกิน 400K/500K ให้เขียน handoff แล้ว /clear และทำงานต่อเองในบทสนทนาใหม่ หรือสั่งเองได้ทุกเมื่อด้วย /kit-checkpoint"
     },
     {
+      "name": "kit-recap",
+      "source": "./plugins/kit-recap",
+      "description": "/kit-recap:recap สรุปว่าคุยกันถึงไหนแล้วใน session นี้ ย้อนจาก turn ล่าสุดไป 5 turn"
+    },
+    {
       "name": "9arm-skills",
       "source": {
         "source": "github",
