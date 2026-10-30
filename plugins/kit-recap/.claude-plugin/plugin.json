@@ -1,0 +1,8 @@
+{
+  "name": "kit-recap",
+  "version": "0.1.0",
+  "description": "/kit-recap:recap สรุปว่าคุยกันถึงไหนแล้วใน session นี้ ย้อนจาก turn ล่าสุดไป 5 turn ว่าตอนนี้รอผู้ใช้ทำอะไร และอะไรยังค้าง",
+  "author": {
+    "name": "Kit"
+  }
+}
