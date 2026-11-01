@@ -286,8 +286,9 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('session.append', async ($, e, next) => {
-    if (e.agentId === undefined && e.door === 'delivery') {
+  // Only delivery rows: an organization's built-in guard passes user mods over hook-context rows and says so each time.
+  on('session.append', { door: 'delivery' }, async ($, e, next) => {
+    if (e.agentId === undefined) {
       s.prompts++
       cancel()
     }
