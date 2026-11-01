@@ -2,7 +2,7 @@ import { test, expect, mock } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { AgentStatus, On, PromptOrigin } from 'claude-code'
 
-import { MSG, TOOL } from './logic'
+import { CEILINGS, MSG, TOOL } from './logic'
 
 const T0 = Date.UTC(2026, 9, 17, 12, 0, 0) // 19:00:00 Bangkok
 const DENIED = 'ListSkills' // a tool whose call the world refuses
@@ -82,22 +82,29 @@ const pluginTurn = ($: Engine, text: string, turnId: string) =>
 
 test('warns at 400K, again at +25K, hard at 500K', async ($, on) => {
   const { w } = world(on)
-  w.tokens = 410_000; expect(ctx(await bash($))).toContain(MSG.soft)
+  w.tokens = 410_000; expect(ctx(await bash($))).toContain(MSG.soft(CEILINGS.hard))
   w.tokens = 420_000; expect(ctx(await bash($))).toBe('')
-  w.tokens = 436_000; expect(ctx(await bash($))).toContain(MSG.soft)
+  w.tokens = 436_000; expect(ctx(await bash($))).toContain(MSG.soft(CEILINGS.hard))
   w.tokens = 501_000; expect(ctx(await bash($))).toContain(MSG.hard)
+})
+
+test('warns at the ceilings set in the options', { options: { warn_at_k: 200, stop_at_k: 300 } }, async ($, on) => {
+  const { w } = world(on)
+  w.tokens = 190_000; expect(ctx(await bash($))).toBe('')
+  w.tokens = 210_000; expect(ctx(await bash($))).toContain(MSG.soft(300_000))
+  w.tokens = 301_000; expect(ctx(await bash($))).toContain(MSG.hard)
 })
 
 test('denied result gets no warning, the next result does', async ($, on) => {
   const { w } = world(on)
   w.tokens = 410_000
   expect((await $.tool.call({ tool: DENIED })).context).toBeUndefined()
-  expect(ctx(await bash($))).toContain(MSG.soft)
+  expect(ctx(await bash($))).toContain(MSG.soft(CEILINGS.hard))
 })
 
 test('prompts share the dedupe', async ($, on) => {
   const { w } = world(on)
-  w.tokens = 410_000; expect(ctx(await user($, 'hi'))).toContain(MSG.soft)
+  w.tokens = 410_000; expect(ctx(await user($, 'hi'))).toContain(MSG.soft(CEILINGS.hard))
   w.tokens = 415_000; expect(ctx(await bash($))).toBe('')
 })
 
@@ -106,7 +113,7 @@ test('quiet after startedAt changes until a reading below 400K', async ($, on) =
   w.tokens = 410_000; await bash($)
   w.startedAt = 2; w.tokens = 450_000; expect(ctx(await bash($))).toBe('')
   w.tokens = 30_000; await bash($)
-  w.tokens = 410_000; expect(ctx(await bash($))).toContain(MSG.soft)
+  w.tokens = 410_000; expect(ctx(await bash($))).toContain(MSG.soft(CEILINGS.hard))
 })
 
 test('subagent calls are not watched', async ($, on) => {
@@ -150,7 +157,7 @@ test('/kit-checkpoint lasts one turn', async ($, on) => {
   await checkpoint($); await clock.settle()
   await pluginTurn($, MSG.manual, 'T1'); await step($, 'T1'); await done($, 'T1')
   await $.turn.start({ text: 'อีกเรื่อง', turnId: 'T2' }); await step($, 'T2')
-  expect((await handoff($)).result).toBe(MSG.notYet)
+  expect((await handoff($)).result).toBe(MSG.notYet(CEILINGS.soft))
 })
 
 test('a prompt queued ahead of the /kit-checkpoint one keeps the 400K check', async ($, on) => {
@@ -158,7 +165,7 @@ test('a prompt queued ahead of the /kit-checkpoint one keeps the 400K check', as
   w.tokens = 100_000
   await checkpoint($); await clock.settle()
   await $.turn.start({ text: 'คิวไว้ก่อน', turnId: 'T1' }); await step($, 'T1')
-  expect((await handoff($)).result).toBe(MSG.notYet)
+  expect((await handoff($)).result).toBe(MSG.notYet(CEILINGS.soft))
 })
 
 test('saves the file and answers', async ($, on) => {
@@ -181,7 +188,7 @@ test('never overwrites an existing file', async ($, on) => {
 test('refusals write nothing', async ($, on) => {
   const { w } = world(on)
   await step($, 'T1')
-  w.tokens = 300_000; expect((await handoff($)).result).toBe(MSG.notYet)
+  w.tokens = 300_000; expect((await handoff($)).result).toBe(MSG.notYet(CEILINGS.soft))
   w.tokens = 450_000
   expect((await $.tool.call({ tool: TOOL, content: 'x', mode: 'auto', reason: '', agentId: 'a1' })).result).toBe(MSG.fromSubagent)
   w.agents = [{ id: 'a1', status: 'running' }]; expect((await handoff($)).result).toBe(MSG.agentsBusy)
@@ -262,7 +269,7 @@ test('handoff with usage failure refuses', async ($, on) => {
   const { w } = world(on)
   w.usageThrows = true
   await step($, 'T1')
-  expect((await handoff($)).result).toBe(MSG.notYet)
+  expect((await handoff($)).result).toBe(MSG.notYet(CEILINGS.soft))
 })
 
 test('refuses right after a user clear', async ($, on) => {
@@ -392,7 +399,7 @@ test('clear rejects: no submit, next handoff accepted', async ($, on) => {
   expect(w.submits).toEqual([])
   // context ยังอยู่ ~450K ไม่มีค่าต่ำกว่า 400K มาช่วยปลด quiet: finalize ต้องปลดเอง
   w.clear = 'works'
-  expect(ctx(await bash($))).toContain(MSG.soft)
+  expect(ctx(await bash($))).toContain(MSG.soft(CEILINGS.hard))
   await step($, 'T2')
   expect((await handoff($)).result).toContain('บันทึก handoff ไว้ที่')
   await done($, 'T2'); await clock.settle()

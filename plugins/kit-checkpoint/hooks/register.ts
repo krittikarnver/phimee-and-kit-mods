@@ -2,10 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Next, Register, SessionUsage, ToolCallInput, ToolCallResult } from 'claude-code'
 
 import {
-  BURN_CALLS, BUSY, COMMAND, MSG, SOFT, TOOL, TOOL_NAME,
-  burn, guard, handoffDoc, handoffPath, pickLimits, refusal, resetsGen, startText, warnLevel, warnText,
+  BURN_CALLS, BUSY, CEILINGS, COMMAND, MSG, TOOL, TOOL_NAME,
+  burn, ceilingsFrom, formatK, guard, handoffDoc, handoffPath, pickLimits, refusal, resetsGen, startText, warnLevel, warnText,
 } from './logic'
-import type { Mode, Rate, Verdict } from './logic'
+import type { Ceilings, Mode, Rate, Verdict } from './logic'
 
 // The generation of the current conversation; kept in $.state so it outlives a reload.
 const gen = atom({ plugin: 'kit-checkpoint', key: 'gen' } as const, 0)
@@ -31,7 +31,7 @@ const fresh = () => ({
   history: [] as number[],
   rate: null as { limits: Rate[]; at: number } | null,
   startedAt: null as number | null,
-  // No warnings (and no handoff) until a reading below 400K: the figures may still be the old conversation's.
+  // No warnings (and no handoff) until a reading below the soft ceiling: the figures may still be the old conversation's.
   quiet: false,
   rec: null as Rec | null,
   // Main-session tool calls and prompts since the last model request, and that request's turn.
@@ -42,13 +42,14 @@ const fresh = () => ({
   aborted: [] as string[],
   // A stale-handoff line waiting for the next result or prompt to carry it.
   note: null as string | null,
-  // The user typed /kit-checkpoint, and the turn of the prompt it sent: that turn's handoff skips the 400K and just-cleared checks.
+  // The user typed /kit-checkpoint, and the turn of the prompt it sent: that turn's handoff skips the ceiling and just-cleared checks.
   asked: false,
   manualTurn: undefined as string | undefined,
 })
 
 // Module state; register() starts it over, as a reload starts the module's variables over.
 let s = fresh()
+let ceil: Ceilings = CEILINGS
 
 const TOOL_SPEC = {
   name: TOOL_NAME,
@@ -100,7 +101,7 @@ async function observe($: EngineInterface): Promise<SessionUsage> {
   }
   s.startedAt = u.startedAt
   if (u.rateLimits.length > 0) s.rate = { limits: [...u.rateLimits], at: await $.clock.now() }
-  if (u.context.tokens !== undefined && u.context.tokens < SOFT) {
+  if (u.context.tokens !== undefined && u.context.tokens < ceil.soft) {
     s.quiet = false
     s.lastWarned = null
   }
@@ -110,8 +111,8 @@ async function observe($: EngineInterface): Promise<SessionUsage> {
 /** The warning due at this reading, if any; the caller sets lastWarned only once it is attached. */
 function warningFor(tokens: number | undefined): string | null {
   if (s.quiet || tokens === undefined) return null
-  const level = warnLevel(tokens, s.lastWarned)
-  return level && warnText(level, tokens, burn(s.history))
+  const level = warnLevel(tokens, s.lastWarned, ceil)
+  return level && warnText(level, tokens, burn(s.history), ceil)
 }
 
 async function handoffCall($: EngineInterface, e: ToolCallInput, next: Next<'tool.call'>): Promise<ToolCallResult> {
@@ -133,7 +134,7 @@ async function handoffCall($: EngineInterface, e: ToolCallInput, next: Next<'too
     prompts: s.prompts,
     busyAgents,
     manual: turnId !== undefined && turnId === s.manualTurn,
-  })
+  }, ceil)
   if (no) return { result: no }
 
   const content = input.content as string
@@ -229,12 +230,13 @@ async function finalize($: EngineInterface, mine: Rec): Promise<void> {
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   s = fresh()
+  ceil = ceilingsFrom(options)
 
   on('session.start', async ($, e, next) => {
     await registerTool($)
-    await $.command.register({ name: COMMAND, description: 'เขียน handoff ลง .git แล้ว clear ตอนนี้เลย ไม่ต้องรอ context ถึง 400K' })
+    await $.command.register({ name: COMMAND, description: `เขียน handoff ลง .git แล้ว clear ตอนนี้เลย ไม่ต้องรอ context ถึง ${formatK(ceil.soft)}` })
     return next(e)
   }).catch(($, e, next) => next(e))
 

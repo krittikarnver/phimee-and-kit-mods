@@ -1,7 +1,7 @@
 // Pure rules and messages for kit-checkpoint, kept apart from the hooks so tests can import them.
 
-export const SOFT = 400_000
-export const HARD = 500_000
+export type Ceilings = { soft: number; hard: number }
+export const CEILINGS: Ceilings = { soft: 400_000, hard: 500_000 }
 export const STEP = 25_000
 export const BURN_CALLS = 10
 export const TOOL_NAME = 'handoff'
@@ -40,10 +40,17 @@ const pad = (n: number) => String(n).padStart(2, '0')
 export const formatK = (tokens: number): string =>
   tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(1)}M` : `${Math.round(tokens / 1000)}k`
 
+/** The ceilings from the plugin options (in K); a stop that isn't above the warning falls back to the defaults. */
+export const ceilingsFrom = (o: Readonly<Record<string, unknown>>): Ceilings => {
+  const soft = Number(o.warn_at_k) * 1000
+  const hard = Number(o.stop_at_k) * 1000
+  return soft > 0 && hard > soft ? { soft, hard } : CEILINGS
+}
+
 export const MSG = {
-  soft: `ทำชิ้นปัจจุบันต่อได้ ประเมินว่างานชิ้นถัดไปจะทำทันก่อน ${formatK(HARD)} ไหม ถ้าไม่ทันให้หยุดที่ checkpoint ถัดไป (จุดที่ถ้าหยุดแล้วเริ่มใหม่ งานไม่พัง) แล้วเรียก tool handoff`,
+  soft: (hard: number) => `ทำชิ้นปัจจุบันต่อได้ ประเมินว่างานชิ้นถัดไปจะทำทันก่อน ${formatK(hard)} ไหม ถ้าไม่ทันให้หยุดที่ checkpoint ถัดไป (จุดที่ถ้าหยุดแล้วเริ่มใหม่ งานไม่พัง) แล้วเรียก tool handoff`,
   hard: 'หยุดทันทีที่หยุดได้อย่างปลอดภัย ถ้ากำลังแก้ไฟล์อยู่ให้ทำให้เสร็จจนอยู่ในสภาพที่ใช้ได้ก่อน แล้วเรียก tool handoff',
-  notYet: 'context ยังไม่ถึง 400K ไม่ต้อง handoff',
+  notYet: (soft: number) => `context ยังไม่ถึง ${formatK(soft)} ไม่ต้อง handoff`,
   fromSubagent: 'เรียก handoff ได้จาก session หลักเท่านั้น',
   noContent: 'content ว่าง ใส่ handoff ทั้งก้อนแล้วเรียกใหม่',
   justCleared: 'เพิ่ง clear ไป ตัวเลข context ยังเป็นของเก่า ไม่ต้อง handoff',
@@ -64,12 +71,12 @@ export const MSG = {
   manualOutput: 'ให้ Claude เขียน handoff แล้ว จบ turn นั้นเมื่อไหร่จะ clear แล้วทำต่อในบทสนทนาใหม่',
 }
 
-/** Warn on first crossing 400K, again every +25K since the last warning, and at once on crossing 500K. */
-export const warnLevel = (tokens: number | undefined, lastWarned: number | null): Level | null => {
-  if (tokens === undefined || tokens < SOFT) return null
-  const due = lastWarned === null || tokens >= lastWarned + STEP || (tokens >= HARD && lastWarned < HARD)
+/** Warn on first crossing the soft ceiling, again every +25K since the last warning, and at once on crossing the hard one. */
+export const warnLevel = (tokens: number | undefined, lastWarned: number | null, c: Ceilings = CEILINGS): Level | null => {
+  if (tokens === undefined || tokens < c.soft) return null
+  const due = lastWarned === null || tokens >= lastWarned + STEP || (tokens >= c.hard && lastWarned < c.hard)
   if (!due) return null
-  return tokens >= HARD ? 'hard' : 'soft'
+  return tokens >= c.hard ? 'hard' : 'soft'
 }
 
 /** Context growth over the last BURN_CALLS tool calls; history runs oldest to newest. */
@@ -81,16 +88,16 @@ export const burn = (history: readonly number[]): Burn | null => {
   return { grew: newest - oldest, calls: last.length - 1 }
 }
 
-export const warnText = (level: Level, tokens: number, b: Burn | null): string => {
+export const warnText = (level: Level, tokens: number, b: Burn | null, c: Ceilings = CEILINGS): string => {
   const burnPart = b ? `โต ${formatK(b.grew)} ใน ${b.calls} tool call ล่าสุด` : 'ยังไม่มี burn rate'
-  return `[kit-checkpoint] context ${formatK(tokens)} · เหลือ ${formatK(Math.max(0, HARD - tokens))} ก่อนถึง ${formatK(HARD)} · ${burnPart} · ${MSG[level]}`
+  return `[kit-checkpoint] context ${formatK(tokens)} · เหลือ ${formatK(Math.max(0, c.hard - tokens))} ก่อนถึง ${formatK(c.hard)} · ${burnPart} · ${level === 'soft' ? MSG.soft(c.hard) : MSG.hard}`
 }
 
 /** Why the handoff tool must refuse, checked in spec order; null when it may proceed. */
-export const refusal = (f: CallFacts): string | null => {
+export const refusal = (f: CallFacts, c: Ceilings = CEILINGS): string | null => {
   if (f.agentId !== undefined) return MSG.fromSubagent
   if (typeof f.content !== 'string' || f.content.trim() === '') return MSG.noContent
-  if (!f.manual && (f.tokens === undefined || f.tokens < SOFT)) return MSG.notYet
+  if (!f.manual && (f.tokens === undefined || f.tokens < c.soft)) return MSG.notYet(c.soft)
   if (!f.manual && f.quiet) return MSG.justCleared
   if (f.phase !== 'none') return MSG.already
   if (f.tools > 0) return MSG.siblings
