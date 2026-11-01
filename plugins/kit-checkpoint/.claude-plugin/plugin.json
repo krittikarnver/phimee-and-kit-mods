@@ -1,1 +1,27 @@
-{ "name": "kit-checkpoint", "version": "0.2.0", "description": "เตือน Claude ตอน context ของ session หลักเกิน 400K/500K ให้เขียน handoff ลง .git แล้ว /clear และส่ง handoff ต่อเป็นข้อความแรก ทำต่อเองได้เมื่อผ่านกันชน หรือสั่งเองได้ทุกเมื่อด้วย /kit-checkpoint", "author": { "name": "Kit" }, "types": "./types/index.d.ts" }
+{
+  "name": "kit-checkpoint",
+  "version": "0.3.0",
+  "description": "เตือน Claude ตอน context ของ session หลักเกิน 400K/500K (ตั้งเพดานเองได้) ให้เขียน handoff ลง .git แล้ว /clear และส่ง handoff ต่อเป็นข้อความแรก ทำต่อเองได้เมื่อผ่านกันชน หรือสั่งเองได้ทุกเมื่อด้วย /kit-checkpoint",
+  "author": {
+    "name": "Kit"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "warn_at_k": {
+      "type": "number",
+      "title": "เตือนเมื่อ context เกิน (K)",
+      "description": "เกินค่านี้ (พัน token) จะบอก Claude ให้หาจุดพักแล้วเขียน handoff ค่าเริ่มต้น 400",
+      "default": 400,
+      "min": 50,
+      "max": 1000
+    },
+    "stop_at_k": {
+      "type": "number",
+      "title": "สั่งหยุดเมื่อ context เกิน (K)",
+      "description": "เกินค่านี้ (พัน token) จะบอก Claude ให้หยุดทันทีที่หยุดได้ ต้องมากกว่าค่าเตือน ไม่งั้นใช้ค่าเริ่มต้นทั้งคู่ ค่าเริ่มต้น 500",
+      "default": 500,
+      "min": 50,
+      "max": 1000
+    }
+  }
+}

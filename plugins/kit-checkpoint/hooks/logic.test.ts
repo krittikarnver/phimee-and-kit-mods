@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 
 import type { CallFacts, Rate } from './logic'
-import { MSG, burn, guard, handoffDoc, handoffPath, pickLimits, refusal, resetsGen, stamp, startText, warnLevel, warnText } from './logic'
+import { CEILINGS, MSG, burn, ceilingsFrom, guard, handoffDoc, handoffPath, pickLimits, refusal, resetsGen, stamp, startText, warnLevel, warnText } from './logic'
 
 test('warn levels and dedupe', () => {
   expect(warnLevel(undefined, null)).toBeNull()
@@ -23,7 +23,7 @@ test('burn over the last 10 calls', () => {
 
 test('warn text', () => {
   expect(warnText('soft', 430_000, { grew: 40_000, calls: 10 })).toBe(
-    `[kit-checkpoint] context 430k · เหลือ 70k ก่อนถึง 500k · โต 40k ใน 10 tool call ล่าสุด · ${MSG.soft}`)
+    `[kit-checkpoint] context 430k · เหลือ 70k ก่อนถึง 500k · โต 40k ใน 10 tool call ล่าสุด · ${MSG.soft(CEILINGS.hard)}`)
   expect(warnText('hard', 520_000, null)).toBe(
     `[kit-checkpoint] context 520k · เหลือ 0k ก่อนถึง 500k · ยังไม่มี burn rate · ${MSG.hard}`)
 })
@@ -37,8 +37,8 @@ test('refusal reasons in order', () => {
   expect(refusal({ ...ok, agentId: 'a1' })).toBe(MSG.fromSubagent)
   expect(refusal({ ...ok, content: '' })).toBe(MSG.noContent)
   expect(refusal({ ...ok, content: 42 })).toBe(MSG.noContent)
-  expect(refusal({ ...ok, tokens: undefined })).toBe(MSG.notYet)
-  expect(refusal({ ...ok, tokens: 399_999 })).toBe(MSG.notYet)
+  expect(refusal({ ...ok, tokens: undefined })).toBe(MSG.notYet(CEILINGS.soft))
+  expect(refusal({ ...ok, tokens: 399_999 })).toBe(MSG.notYet(CEILINGS.soft))
   expect(refusal({ ...ok, quiet: true })).toBe(MSG.justCleared)
   expect(refusal({ ...ok, phase: 'pending' })).toBe(MSG.already)
   expect(refusal({ ...ok, tools: 1 })).toBe(MSG.siblings)
@@ -110,4 +110,17 @@ test('which origins reset the generation', () => {
   expect(resetsGen('composer')).toBe(true)
   expect(resetsGen('bridge')).toBe(true)
   for (const k of ['task-notification', 'scheduled-trigger', 'unclassified', 'plugin', 'sdk']) expect(resetsGen(k)).toBe(false)
+})
+
+test('ceilings come from the options in K; a stop not above the warning falls back', () => {
+  const c = ceilingsFrom({ warn_at_k: 200, stop_at_k: 300 })
+  expect(c).toEqual({ soft: 200_000, hard: 300_000 })
+  expect(ceilingsFrom({ warn_at_k: 300, stop_at_k: 300 })).toEqual(CEILINGS)
+  expect(ceilingsFrom({})).toEqual(CEILINGS)
+  expect(warnLevel(199_000, null, c)).toBeNull()
+  expect(warnLevel(200_000, null, c)).toBe('soft')
+  expect(warnLevel(300_000, 290_000, c)).toBe('hard')
+  expect(warnText('soft', 210_000, null, c)).toContain('เหลือ 90k ก่อนถึง 300k')
+  expect(refusal({ ...ok, tokens: 250_000 }, c)).toBeNull()
+  expect(refusal({ ...ok, tokens: 150_000 }, c)).toBe(MSG.notYet(200_000))
 })
