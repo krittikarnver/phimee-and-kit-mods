@@ -1120,11 +1120,11 @@ relaunched_after_exit "hc get broken JSON after /exit: still relaunched" 'echo "
 relaunched_after_exit "hc get fails (exit 1) after /exit: still relaunched" 'echo "exit 1" >"$FAKE/hook-hc-get"'
 
 wworld; wpane t1 101 alpha
-hook '((now == T0 + 30)) && { wc -l <"$FAKE/hc-calls" >"$FAKE/hc-n"; rm "$FAKE/core-up"; fake_kill 100; }' # herdr-core stops after /exit, its shell with it
+hook '((now == T0 + 30)) && { wc -l <"$FAKE/hc-calls" >"$FAKE/hc-n"; rm "$FAKE/core-up"; }' # herdr-core stops after /exit, the pane's shell stays
 rw
-[[ "$(tail -n +$(($(tr -d ' ' <"$FAKE/hc-n") + 1)) "$FAKE/hc-calls" | grep -c '^get ')" == 0 ]] && ! skipped 'alpha (hc t1)' gone \
-  && skipped 'alpha (hc t1)' 'shell not in front' && grep -qF "relaunch it yourself: $(relaunch_of alpha alpha-t1)" "$LOG"
-check "herdr-core stops after /exit: no hc get (it would start one), not gone, relaunch command logged" $?
+[[ "$(tail -n +$(($(tr -d ' ' <"$FAKE/hc-n") + 1)) "$FAKE/hc-calls" | wc -l | tr -d ' ')" == 0 ]] && ! skipped 'alpha (hc t1)' gone \
+  && skipped 'alpha (hc t1)' 'relaunch failed' && grep -qF "relaunch it yourself: $(relaunch_of alpha alpha-t1)" "$LOG"
+check "herdr-core stops after /exit, shell alive: no hc call at all (it would start one), relaunch failed, command logged" $?
 
 wworld; wpane t1 101 alpha; echo exit-fails >"$FAKE/life-t1"
 rw

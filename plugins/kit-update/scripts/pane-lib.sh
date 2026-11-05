@@ -76,7 +76,8 @@ hc_up() {
 
 # The only way the scripts run hc: without HC_TERMINAL_ID (hc would wrap what it sends as chat from that
 # terminal) and without the caller's stdin (reload calls it inside a `while read` loop, and hc would eat the list).
-hc_call() { env -u HC_TERMINAL_ID "${KIT_UPDATE_HC_BIN:-hc}" "$@" </dev/null; }
+# It never runs hc while herdr-core is down (hc would start one): status 2, which hc_term reads as unknown.
+hc_call() { hc_up || return 2; env -u HC_TERMINAL_ID "${KIT_UPDATE_HC_BIN:-hc}" "$@" </dev/null; }
 
 _pane_lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
