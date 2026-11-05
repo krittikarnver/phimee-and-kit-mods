@@ -61,7 +61,7 @@
 20. `hc kill <worker>` ส่ง hangup ที่ worker จับได้ ส่วน Ctrl-C ใน `hc attach <worker>` ก็ไปถึง worker (ปุ่ม detach ของ attach คือ ctrl+\) ทั้งสองแบบ worker เขียน Summary (session ที่ยังไม่ถึงคิวเป็น `stopped`) ลบ lock แล้วจบ
 21. Claude อาจย้ายคำสั่ง Bash ที่ใช้เวลานานไปรันเบื้องหลัง สถานะเลยเปลี่ยนเป็น `done` ทั้งที่ยังมีงานค้าง worker ยังรอด้วยเหตุผล `background process still running`
 22. `hc send` ตอนที่มีคนพิมพ์ผ่าน attach: รอจนคนหยุดพิมพ์ (ราว 3 วินาที) แล้ววางข้อความต่อท้ายสิ่งที่พิมพ์ค้างไว้ ข้อความจะไม่แทรกกลางคำ แต่ถ้ามีคนเริ่มพิมพ์หลังจากที่สคริปต์อ่านจอไปแล้ว คำสั่งจะไปต่อท้ายสิ่งที่พิมพ์ ฝั่ง tmux ก็มีช่วงเสี่ยงนี้เหมือนกัน
-23. worker ที่เปิดด้วย `hc run --bg --no-parent` ขึ้นในแอป Herdr ไหม: ยังไม่ได้เช็ก
+23. worker ที่เปิดด้วย `hc run --bg --no-parent` ไม่ขึ้นในแอป Herdr: `hc get` ให้ `labels` ว่างและ `where` เป็น `null` และ `herdr-app ls` ไม่มีชื่อ worker (แอปแสดงเฉพาะ terminal ที่ติด label `herdr.space`) ดู worker ได้ทางเดียวคือ `hc attach <ชื่อ>`
 
 ## Design
 

@@ -69,7 +69,7 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
   - session ไหนว่าง worker จะพิมพ์คำขอ handoff ให้ Claude ตอบในแชท (ไม่เขียนไฟล์ ไม่เรียก tool) เก็บคำตอบลง `~/.claude/kit-update/handoffs/` แล้วพิมพ์ `/exit` และเปิด `claude --name <ชื่อเดิม> "<handoff>"` ใหม่ใน pane เดิม session นี้ไปหลังตัวอื่น
   - ทุก session ต้องส่ง context ทั้งก้อนเพื่อเขียน handoff จึงใช้ token (ขอพร้อมกันไม่เกิน 2 session)
   - log อยู่ที่ `~/.claude/kit-update/restart.log` และมี `Summary` ปิดท้ายทั้งใน log และใน pane ของ worker pane นั้นไม่ปิดเอง ต้องปิดเอง ส่วน terminal ของ worker ใน herdr-core ที่จบแล้วยังอยู่จนกว่าจะ `hc rm <ชื่อ>`
-  - หยุดได้ด้วย Ctrl-C ใน pane ของ worker (หรือปิด pane นั้น) session ที่ได้รับ `/exit` ไปแล้วจะถูกเปิดใหม่ให้จบ ที่เหลือไม่ถูกแตะ (herdr-core: ดู worker ด้วย `hc attach <ชื่อ>` หยุดด้วย Ctrl-C ใน attach หรือ `hc kill <ชื่อ>`)
+  - หยุดได้ด้วย Ctrl-C ใน pane ของ worker (หรือปิด pane นั้น) session ที่ได้รับ `/exit` ไปแล้วจะถูกเปิดใหม่ให้จบ ที่เหลือไม่ถูกแตะ (herdr-core: worker ไม่ขึ้นในแอป Herdr ดูได้ด้วย `hc attach <ชื่อ>` หยุดด้วย Ctrl-C ใน attach หรือ `hc kill <ชื่อ>`)
   - session ที่ทำงานอยู่ มีคำถามค้าง พิมพ์ค้างไว้ หรืออยู่ใน copy mode จะรอจนพร้อม และถูกข้ามถ้าครบ 4 ชั่วโมงแล้วยังไม่พร้อม การตรวจ subagent, teammate, `/loop` และคำถามที่ยังไม่ได้ตอบเป็น best effort ไม่การันตี
   - session ที่มี process เบื้องหลังรันตลอด (dev server, watcher) จะไม่ถูก restart และถูกข้ามหลัง 4 ชั่วโมง
   - session ที่ตอบว่า `NOT-READY` หรือไม่ได้ handoff ที่ใช้ได้ จะไม่ถูกปิด
