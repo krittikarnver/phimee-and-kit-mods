@@ -69,9 +69,9 @@
 
 ส่วน herdr แทนด้วย herdr-core:
 
-1. เรียก `hc` เฉพาะเมื่อ core เปิดอยู่แล้ว **(Claude เลือก รอกิตยืนยัน)**: `pgrep -x -U <uid> herdr-core` เจอ หรือ `HC_TERMINAL_ID` มีค่าและไม่ได้อยู่ใน tmux เพราะทุกคำสั่ง `hc` จะเปิด core ขึ้นมาเองถ้ายังไม่มี แล้ว `hc ls --json` ได้ = มี server เลือก `agent == "claude-code"`, `state == "live"`, address ไม่มี `/`
+1. เรียก `hc` เฉพาะเมื่อ core เปิดอยู่แล้ว **(Claude เลือก รอกิตยืนยัน)**: `pgrep -x -U <uid> herdr-core` เจอ เพราะทุกคำสั่ง `hc` จะเปิด core ขึ้นมาเองถ้ายังไม่มี ถ้า pgrep ตอบไม่ได้ (ไม่มีคำสั่ง หรือ exit ≥ 2) ใช้ `HC_TERMINAL_ID` มีค่าและไม่ได้อยู่ใน tmux แทน แต่ถ้า pgrep บอกว่าไม่มี core ก็ไม่เรียก เพราะ terminal ที่เปิดต่อจาก tab ของ hc ได้ `HC_TERMINAL_ID` ติดไปแม้ core ปิดแล้ว แล้ว `hc ls --json` ได้ = มี server เลือก `agent == "claude-code"`, `state == "live"`, address ไม่มี `/`
 2. ชื่อที่แสดง: `"<name หรือ where หรือชื่อโฟลเดอร์ของ cwd> (hc <address>)"`
-3. ข้าม terminal ของตัวเอง (`address == $HC_TERMINAL_ID`)
+3. ข้าม terminal ของตัวเอง (`address == $HC_TERMINAL_ID` เมื่อไม่ได้อยู่ใน tmux) **(Claude เลือก)**: tmux ที่เปิดจาก tab ของ hc พา `HC_TERMINAL_ID` ของ tab นั้นติดไป
 4. `status` เป็น `working` = busy, `blocked` = waiting on a question, นอกนั้น (`idle`, `done`, `error`, ไม่มีสถานะ) ไปต่อที่หน้าจอ **(Claude เลือก)**: `error` คือจบ turn ด้วย error (เช่นติด rate limit) และ Claude ที่ไม่รายงานสถานะเลยก็ยังเช็กได้ด้วยหน้าจอแบบ tmux ซึ่งแยก busy / question / draft เองอยู่แล้ว
 5. หน้าจอจาก `hc-screen.pl` → `screen_tail` → `screen_state` ตัดสินแบบเดียวกับ tmux อ่านไม่ได้ = ข้ามพร้อมเหตุผล "screen unreadable"
 6. `env -u HC_TERMINAL_ID hc send <t> /reload-plugins` ถ้าล้มเหลวให้ข้ามพร้อมเหตุผล "hc send failed"
@@ -86,13 +86,13 @@
 4. parent ของ Claude ต้องเป็น shell pid และ `shell_ok` ผ่าน ไม่งั้นข้ามแบบเดิม
 5. `add hc <address> <where> …` label ใช้ `where` ถ้าไม่มีใช้ชื่อโฟลเดอร์ของ cwd
 
-worker เปิดใน herdr-core เมื่อ `HC_TERMINAL_ID` มีค่าและมี herdr-core server หรือไม่ได้อยู่ใน tmux แต่มี herdr-core server ไม่งั้นเปิดใน tmux (ลำดับเดิม แค่แทน herdr ด้วย hc)
+worker เปิดใน herdr-core เมื่อไม่ได้อยู่ใน tmux และมี herdr-core server ไม่งั้นเปิดใน tmux **(Claude เลือก)**: ลำดับเดิมดู `HERDR_ENV` ก่อน `TMUX` แต่ tmux ที่เปิดจาก tab ของ hc พา `HC_TERMINAL_ID` ติดไปด้วย คนสั่งที่อยู่ใน tmux จึงควรได้ worker ใน tmux ของตัวเอง
 
 ```
 env -u HC_TERMINAL_ID hc run --bg --no-parent --name kit-update-restart-<HHMMSS> --cwd <KU_DIR> -- env PATH=<PATH> LANG=<LANG> bash <restart-worker.sh> <state>
 ```
 
-- program ที่ `hc run` เปิดได้ environment ของ core ไม่ใช่ของคนสั่ง จึงต้องส่ง `PATH` (หา `claude`, `jq`, `hc`, `perl`) และ `LANG`/`LC_*` ที่มีค่าตามไปเอง **(Claude เลือก)** ส่วน `CLAUDE_CONFIG_DIR` ไปทาง state อยู่แล้ว
+- program ที่ `hc run` เปิดได้ environment ของ core ไม่ใช่ของคนสั่ง จึงต้องส่ง `PATH` (หา `claude`, `jq`, `hc`, `perl`) และ `LANG`/`LC_*` ที่มีค่าตามไปเอง รวม `TMUX_TMPDIR` ที่มีค่า (ให้ worker เจอ tmux server ตัวเดียวกับ snapshot เมื่อคนสั่งไม่ได้อยู่ใน tmux) **(Claude เลือก)** ส่วน `CLAUDE_CONFIG_DIR` ไปทาง state อยู่แล้ว
 - เพดาน 1024 byte ของบรรทัดคำสั่ง worker เป็นของ tmux `send-keys` ใช้เฉพาะฝั่ง tmux
 
 - รัน worker เป็น program ของ terminal ตรง ๆ **(Claude เลือก)** ไม่ได้พิมพ์เข้า shell เพราะ `hc send` เข้า shell ที่เพิ่งเปิดอาจหล่น ("a send to a booting agent can be dropped") เมื่อ worker จบ terminal จะเป็น `finished` แต่ยัง `hc read` ได้จนกว่าจะ `hc rm`
