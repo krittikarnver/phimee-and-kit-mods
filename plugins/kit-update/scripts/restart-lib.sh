@@ -257,9 +257,10 @@ activity_after() { # FILE OFFSET
 
 # Terminal T as herdr-core sees it (hc get): 0 while it is live, its status word on stdout (empty when it has
 # none); 1 when it is gone (no such terminal, or its program finished); 2 when that is unknown (hc failed, or an
-# answer that does not read), which is no proof that it is gone.
+# answer that does not read, or herdr-core is down: hc would start one), which is no proof that it is gone.
 hc_term() {
   local j s
+  hc_up || return 2
   j=$(hc_call get "$1" --json 2>/dev/null)
   case $? in
     0) ;;

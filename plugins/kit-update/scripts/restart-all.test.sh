@@ -1119,6 +1119,13 @@ gone_after_exit "terminal finished after /exit: gone" 'hget t1 finished'
 relaunched_after_exit "hc get broken JSON after /exit: still relaunched" 'echo "{\"state\":\"live\",\"status\":" >"$FAKE/hget-t1"'
 relaunched_after_exit "hc get fails (exit 1) after /exit: still relaunched" 'echo "exit 1" >"$FAKE/hook-hc-get"'
 
+wworld; wpane t1 101 alpha
+hook '((now == T0 + 30)) && { wc -l <"$FAKE/hc-calls" >"$FAKE/hc-n"; rm "$FAKE/core-up"; fake_kill 100; }' # herdr-core stops after /exit, its shell with it
+rw
+[[ "$(tail -n +$(($(tr -d ' ' <"$FAKE/hc-n") + 1)) "$FAKE/hc-calls" | grep -c '^get ')" == 0 ]] && ! skipped 'alpha (hc t1)' gone \
+  && skipped 'alpha (hc t1)' 'shell not in front' && grep -qF "relaunch it yourself: $(relaunch_of alpha alpha-t1)" "$LOG"
+check "herdr-core stops after /exit: no hc get (it would start one), not gone, relaunch command logged" $?
+
 wworld; wpane t1 101 alpha; echo exit-fails >"$FAKE/life-t1"
 rw
 [[ -s "$FAKE/argv-t1" ]] && restarted 'alpha (hc t1)'

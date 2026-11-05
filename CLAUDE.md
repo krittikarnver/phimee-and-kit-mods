@@ -20,7 +20,7 @@ claude --plugin-dir ./plugins/<name>      # start a session with the local copy 
 tsc -p ./plugins/<name>                   # type-check; only works after the engine has generated types (below)
 bash plugins/kit-update/scripts/update-all.sh --dry-run   # KIT_UPDATE_CLAUDE_BIN=<fake> to stub the claude CLI
 bash plugins/kit-update/scripts/reload-all.test.sh       # self-check for reload-all.sh against a fake tmux and hc (KIT_UPDATE_TMUX_BIN, KIT_UPDATE_HC_BIN, KIT_UPDATE_SCREEN_BIN, KIT_UPDATE_PGREP_BIN)
-bash plugins/kit-update/scripts/restart-all.test.sh      # self-check for restart-all.sh and restart-worker.sh against a fake tmux and hc (KIT_UPDATE_TMUX_BIN, KIT_UPDATE_HC_BIN, KIT_UPDATE_SCREEN_BIN, KIT_UPDATE_PGREP_BIN, ~45 s)
+bash plugins/kit-update/scripts/restart-all.test.sh      # self-check for restart-all.sh and restart-worker.sh against a fake tmux and hc (KIT_UPDATE_TMUX_BIN, KIT_UPDATE_HC_BIN, KIT_UPDATE_SCREEN_BIN, KIT_UPDATE_PGREP_BIN, ~52 s)
 bash plugins/kit-update/scripts/hc-screen.test.sh   # self-check for hc-screen.pl against a fake framed hc connect (~6 s)
 bash plugins/kit-scrutinize/scripts/user-said.test.sh   # self-check for user-said.sh against a fake CLAUDE_CONFIG_DIR and git repo
 ```
