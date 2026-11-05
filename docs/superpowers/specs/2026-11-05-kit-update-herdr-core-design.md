@@ -50,6 +50,19 @@
 12. `hc run --bg --no-parent --name N --cwd D` ไม่ใส่คำสั่ง จะได้ login shell ไม่มี label ของแอป
 13. session จริงของกิตที่เปิดจากแอป (สามตัวตอน probe) เป็น terminal ที่ program คือ `/bin/zsh -l` และ Claude เป็นลูกของ shell นั้น จึงไม่โดนข้อ "no shell to relaunch in"
 
+ผลจากการลองกับ hc จริงระหว่างทำ (terminal ทดลองที่เปิดเองทั้งหมด, hc 0.1.18, Claude Code 2.1.318):
+
+14. channel 0 ของ `hc connect` ส่งหนึ่งข้อความ JSON ต่อหนึ่ง DATA frame และไม่มี `\n` ปิดท้าย (ไม่ใช่ JSON lines แบบที่อ่านจาก `hc schema`) `hc-screen.pl` จึงอ่าน channel 0 ด้วย `JSON::PP` `incr_parse` ซึ่งรับได้ทั้งแบบนี้ แบบมี `\n` และแบบถูกแบ่งข้าม frame
+15. หน้าจอแรกมีแค่แถวที่วาดแล้ว (63 จาก 120 แถวบนจอ 200x120) ขึ้นต้นด้วย `\e[!p`, `\e[=0;1u`, `\e[3g` และจบด้วย OSC 7 ที่มี NUL อยู่ก่อน ST กับ OSC 2 `awk` ของ macOS ตัดบรรทัดทิ้งตั้งแต่ NUL ตัวอ่านจึงลบ NUL ไปพร้อมกับ `\r` หน้าจอ 136 KB อ่านได้ครบ และขนาด terminal ไม่เปลี่ยน
+16. อ่านหน้าจอแบบ observe แล้วสถานะใน `hc ls` ไม่เปลี่ยน (`done`, `blocked`, `idle` เหมือนเดิมหลังอ่าน) (เช็กใน `hc ls` ไม่ได้ดูในแอป)
+17. คำแนะนำตัวจางของ Claude Code จริง (`❯ \e[0m\e[2mTry "…"\e[0m` บนจอแรกของ session ใหม่) ได้ `idle` หลังจบ turn ที่ลองไม่มีคำแนะนำขึ้น แถว `❯` ว่าง ได้ `idle` เหมือนกัน ตอน AskUserQuestion ค้าง สถานะเป็น `blocked` และหน้าจออย่างเดียวก็ได้ `question`
+18. Claude ที่รันใน tmux ซึ่งเปิดอยู่ใน terminal ของ hc: `hc ls` ให้ `agent` `tmux` และไม่มี `status`, `hc get` ให้ `foreground.name` `tmux` ทั้ง reload และ restart จึงไม่นับ terminal นี้ตั้งแต่ตอนเลือก (ฝั่ง tmux ดูแล session นั้นเอง)
+19. restart ที่ Claude ใน terminal ของ hc สั่งเอง: หา session ที่สั่งเจอผ่าน ppid (`This session: in the snapshot, goes last`), worker ทำจนจบหลัง Claude ที่สั่ง `/exit` ไปแล้ว ทั้งสอง session เปิดใหม่ด้วยชื่อเดิมและได้ handoff เป็นข้อความแรก และ `hc get <ชื่อ worker>` ยังหา worker ที่จบไปแล้วเจอ (exit 0, `state` `finished`) การเติม `-2` ต่อท้ายชื่อจึงทำงาน
+20. `hc kill <worker>` ส่ง hangup ที่ worker จับได้ ส่วน Ctrl-C ใน `hc attach <worker>` ก็ไปถึง worker (ปุ่ม detach ของ attach คือ ctrl+\) ทั้งสองแบบ worker เขียน Summary (session ที่ยังไม่ถึงคิวเป็น `stopped`) ลบ lock แล้วจบ
+21. Claude อาจย้ายคำสั่ง Bash ที่ใช้เวลานานไปรันเบื้องหลัง สถานะเลยเปลี่ยนเป็น `done` ทั้งที่ยังมีงานค้าง worker ยังรอด้วยเหตุผล `background process still running`
+22. `hc send` ตอนที่มีคนพิมพ์ผ่าน attach: รอจนคนหยุดพิมพ์ (ราว 3 วินาที) แล้ววางข้อความต่อท้ายสิ่งที่พิมพ์ค้างไว้ ข้อความจะไม่แทรกกลางคำ แต่ถ้ามีคนเริ่มพิมพ์หลังจากที่สคริปต์อ่านจอไปแล้ว คำสั่งจะไปต่อท้ายสิ่งที่พิมพ์ ฝั่ง tmux ก็มีช่วงเสี่ยงนี้เหมือนกัน
+23. worker ที่เปิดด้วย `hc run --bg --no-parent` ขึ้นในแอป Herdr ไหม: ยังไม่ได้เช็ก
+
 ## Design
 
 ### 1. ตัวอ่านหน้าจอ `scripts/hc-screen.pl` (ใหม่)

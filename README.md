@@ -76,6 +76,7 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
   - flag ที่ใช้ตอนเปิด session เดิม (เช่น `--model`, `--dangerously-skip-permissions`) ไม่ตามไปด้วย log มีคำสั่งเดิมไว้ให้ ถ้า session เปิดไม่ขึ้น log มีบรรทัด `relaunch it yourself: <คำสั่ง>`
   - shell ใน pane ต้องเป็น bash หรือ zsh (คำสั่งเปิดใหม่ใช้ quoting ของสองตัวนี้)
   - ใน herdr-core ทั้งสองคำสั่งต้องมี `perl` (ใช้อ่านหน้าจอ) และ Claude ต้องรันจาก bash หรือ zsh ใน terminal (แบบ tab ของแอป Herdr) ดูเฉพาะ terminal บนเครื่องนี้ ไม่นับ terminal บนเครื่องอื่น และดู herdr-core เฉพาะตอนที่มันเปิดอยู่ ไม่เปิดให้เอง
+  - ถ้าเริ่มพิมพ์ใน session หลังจากที่สคริปต์อ่านหน้าจอไปแล้ว สิ่งที่สคริปต์ส่งจะไปต่อท้ายข้อความที่พิมพ์ไว้ (herdr-core รอให้หยุดพิมพ์ก่อนส่ง แต่ไม่ล้างข้อความที่พิมพ์ค้าง ฝั่ง tmux ก็มีช่วงนี้เหมือนกัน)
   - ถ้าสคริปต์บอกว่าไม่เจอ session ที่สั่ง หรือไม่มี tmux/herdr-core server ต้องปิดเปิดเอง
 - command ทั้งหกไม่รับ argument ข้อความที่พิมพ์ต่อท้ายไม่ถูกใส่ลงในคำสั่ง shell และ Claude ถูกสั่งให้ไม่ทำตาม ถ้าต้องใช้ flag อื่น (`--only '<regex>'`, `--scope user,project`, `--no-marketplaces`, `-y`) ให้รัน script ตรงจาก terminal
 - install ของ project ที่ไม่มีโฟลเดอร์แล้วจะถูกข้ามพร้อมบอกเหตุผล
