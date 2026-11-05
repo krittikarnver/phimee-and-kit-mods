@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kit-update restart — restart every Claude Code session in tmux or herdr once it is idle,
+# kit-update restart — restart every Claude Code session in tmux or herdr-core once it is idle,
 # each one starting a fresh context from a handoff it writes first.
 #
 # This script only takes the snapshot and starts the worker. restart-worker.sh does the
@@ -11,21 +11,23 @@
 #      alone. A lock whose worker is gone, or that has been starting for 60 s, is taken over.
 #   2. snapshot the Claude Code sessions running now, each tied to its process through its
 #      session file (<config>/sessions/<pid>.json):
-#        tmux:  the pane's process, or a child of the pane's bash or zsh (or sh -c)
-#        herdr: the agent's session id → the one live process whose session file has it
+#        tmux: the pane's process, or a child of the pane's bash or zsh (or sh -c)
+#        hc:   the program in front of a terminal (hc get), when it has a session file here and
+#              is a child of the terminal's own shell. hc is asked only while herdr-core is
+#              already running: any hc command would start it.
 #      The session that runs this script is found up its parent chain; it goes last.
-#   3. write the snapshot to restart.lock/state.<token>, open a pane for the worker (a herdr
-#      workspace when this runs in herdr, else a detached tmux session) and type
-#      `bash restart-worker.sh <state file>` into it.
+#   3. write the snapshot to restart.lock/state.<token> and start the worker: a herdr-core
+#      terminal of its own (hc run) unless this runs in tmux or herdr-core is not up, else a
+#      detached tmux session, where `bash restart-worker.sh <state file>` is typed.
 #   4. print who will restart, who is skipped and why, and where the worker and log are.
 #
-# Skipped at the snapshot: a tmux pane that runs Claude through a wrapper, a herdr pane
-# whose shell is not an interactive bash or zsh (nothing to relaunch in), a herdr pane that
-# runs tmux (keys would land in whichever tmux pane is active; the tmux side covers it),
-# no live process on a session (one of another config dir) or two, teammates of an agent
-# team, and a session file that is not interactive or lacks a field the worker checks.
-# Sessions opened after the snapshot are left alone. Nothing is written outside
-# <config>/kit-update.
+# Skipped at the snapshot: a tmux pane that runs Claude through a wrapper, an hc terminal with
+# something else in front than a Claude Code of this config (a tmux client: the tmux side covers
+# it), Claude as the terminal's own program or under a parent that is not its shell, or under a
+# shell that is not an interactive bash or zsh (nothing to relaunch in), no live process on a
+# session or two, teammates of an agent team, and a session file that is not interactive or lacks
+# a field the worker checks. Sessions opened after the snapshot are left alone. Nothing is
+# written outside <config>/kit-update.
 #
 # Usage: restart-all.sh   (no options)
 # Exit code: 0, also when there is nothing to restart; 1 when the worker could not start.
@@ -55,16 +57,6 @@ ancestors() {
   while p=$(proc_field "$p" ppid) && ((p > 1 && n++ < 64)); do echo "$p"; done
 }
 
-# 0 when a process above PID is tmux: Claude runs in a tmux pane (inside herdr or not).
-tmux_above() {
-  local p a
-  for p in $(ancestors "$1"); do
-    a=$(proc_field "$p" args); a=${a%% *}; a=${a##*/}
-    [[ "$a" == tmux || "$a" == tmux: ]] && return 0
-  done
-  return 1
-}
-
 # A tmux pane may run Claude from bash or zsh (shell_ok), or from sh, bash or zsh -c (the
 # pane then dies with Claude, and the worker respawns it). Anything else is a wrapper.
 pane_shell_ok() {
@@ -92,7 +84,7 @@ tsv() {
   printf '%s\n' "$out"
 }
 
-entry() { if [[ "$1" == tmux ]]; then echo "$4 (tmux $3)"; else echo "$4 (herdr $2)"; fi; } # MUX PANE LABEL NAME
+entry() { if [[ "$1" == tmux ]]; then echo "$4 (tmux $3)"; else echo "$4 (hc $2)"; fi; } # MUX PANE LABEL NAME
 skip() { SKIPPED+=("$1 — $2"); }
 # Why session SID has no single live process, from pid_for_sid's status RC (2: more than one).
 no_pid() { # RC SID
@@ -146,7 +138,7 @@ rm -f "$LOCK/owner.$TOKEN"
 ((rc == 0)) || { rmdir "$LOCK" 2>/dev/null; fail "could not write $LOCK/owner"; } # rmdir: only if still empty
 
 # 2. snapshot
-ROWS=() LIST=() SKIPPED=() SEEN=' ' issuer=0 have_tmux= have_herdr=
+ROWS=() LIST=() SKIPPED=() issuer=0 have_tmux= have_hc=
 ANC=" $(ancestors $$ | tr '\n' ' ')"
 
 if panes=$(tm list-panes -a -F '#{pane_id}	#{session_name}:#{window_index}.#{pane_index}	#{pane_pid}' 2>/dev/null); then
@@ -162,7 +154,6 @@ if panes=$(tm list-panes -a -F '#{pane_id}	#{session_name}:#{window_index}.#{pan
       cl=${cl# }
     fi
     [[ -n "$cl" ]] || continue # not Claude Code
-    SEEN+="$cl "
     shown=$(entry tmux "$id" "$where" "${where%%:*}")
     if [[ "$cl" == *' '* ]]; then skip "$shown" "two Claude processes in the pane"; continue; fi
     if [[ "$sh" != - ]] && ! pane_shell_ok "$(proc_field "$sh" args)"; then
@@ -173,31 +164,24 @@ if panes=$(tm list-panes -a -F '#{pane_id}	#{session_name}:#{window_index}.#{pan
   done <<<"$panes"
 fi
 
-if agents=$("$HERDR_BIN" agent list 2>/dev/null); then
-  have_herdr=1
-  ws=$("$HERDR_BIN" workspace list 2>/dev/null) && jq -e . >/dev/null 2>&1 <<<"$ws" || ws='{}'
-  while IFS=$'\x1f' read -r id label aname sid; do # \x1f, not tab: read merges empty tab-separated fields
-    [[ -n "$id" ]] || continue
-    shown=$(entry herdr "$id" "$label" "${aname:-$label}")
-    [[ -n "$sid" ]] || { skip "$shown" "herdr shows no session id"; continue; }
-    pid=$(pid_for_sid "$sid") || { skip "$shown" "$(no_pid $? "$sid")"; continue; }
-    if tmux_above "$pid"; then
-      [[ "$SEEN" == *" $pid "* ]] || skip "$shown" "runs inside a tmux that was not listed"
-      continue
-    fi
-    sh=$(proc_field "$pid" ppid)
-    shell_ok "$(proc_field "$sh" args)" || { skip "$shown" "its shell is not an interactive bash or zsh ($(proc_field "$sh" args))"; continue; }
-    add herdr "$id" "$label" "$pid" "$sh" "$aname" "${aname:-$label}"
-  done < <(jq -r --argjson ws "$ws" '
-    ([$ws.result.workspaces[]? | select(.workspace_id != null) | {key: .workspace_id, value: (.label // "")}]
-      | from_entries) as $label
-    | .result.agents[]? | select(.agent == "claude")
-    | [.pane_id, ($label[.workspace_id // ""] // ""), (.name // ""), (.agent_session.value // "")] | join("\u001f")
-  ' <<<"$agents")
+if hc_up && terms=$(hc_call ls --json 2>/dev/null); then
+  have_hc=1
+  while IFS=$'\x1f' read -r t label; do # \x1f, not tab: read merges empty tab-separated fields
+    [[ -n "$t" ]] || continue
+    shown=$(entry hc "$t" "$label" "$label")
+    info=$(hc_call get "$t" --json 2>/dev/null) || { skip "$shown" "herdr-core does not answer"; continue; }
+    IFS=$'\x1f' read -r pid cl front < <(jq -r '[.pid, .foreground.pid, .foreground.name] | map(. // "") | join("\u001f")' <<<"$info")
+    is_claude "$cl" || { skip "$shown" "the program in front is not a Claude Code of this config (${front:-nothing})"; continue; }
+    [[ "$cl" != "$pid" ]] || { skip "$shown" "Claude is the terminal's program: no shell to relaunch in"; continue; }
+    [[ "$(proc_field "$cl" ppid)" == "$pid" ]] || { skip "$shown" "its parent is not the terminal's shell"; continue; }
+    shell_ok "$(proc_field "$pid" args)" || { skip "$shown" "its shell is not an interactive bash or zsh ($(proc_field "$pid" args))"; continue; }
+    add hc "$t" "$label" "$cl" "$pid" '' "$label"
+  done < <(jq -r '.terminals[] | select(.agent == "claude-code" and .state == "live" and (.address | contains("/") | not))
+    | [.address, ((.where | select(. != "")) // ((.cwd // "") | split("/") | last))] | join("\u001f")' <<<"$terms")
 fi
 
-if [[ -z "$have_tmux$have_herdr" ]]; then
-  echo "No tmux or herdr server — restart each Claude Code session yourself."
+if [[ -z "$have_tmux$have_hc" ]]; then
+  echo "No tmux or herdr-core server — restart each Claude Code session yourself."
   exit 0
 fi
 if ((${#ROWS[@]} == 0)); then
@@ -206,12 +190,9 @@ if ((${#ROWS[@]} == 0)); then
   exit 0
 fi
 
-# 3. state, then the worker, in the caller's multiplexer, else in the one that has a server
-if [[ -n "${HERDR_ENV:-}" ]]; then wmux=herdr
-elif [[ -n "${TMUX:-}" ]]; then wmux=tmux
-elif [[ -n "$have_herdr" ]]; then wmux=herdr
-else wmux=tmux
-fi
+# 3. state, then the worker: in tmux when the caller is in tmux (an hc tab's HC_TERMINAL_ID outlives its core and
+# rides into the tmux it started, so it says nothing there), else in herdr-core when it is up, else in tmux
+if [[ -z "${TMUX:-}" && -n "$have_hc" ]]; then wmux=hc; else wmux=tmux; fi
 st="$LOCK/state.$TOKEN"
 { printf 'config\t%s\nsocket\t%s\nmux\t%s\n' "$CFG" "$SOCK" "$wmux"; printf '%s\n' "${ROWS[@]}"; } >"$st.tmp" \
   && mv -f "$st.tmp" "$st" || fail "could not write $st"
@@ -220,16 +201,18 @@ if [[ "$(lock_token)" != "$TOKEN" ]]; then
   exit 0
 fi
 
-cmd="bash $(printf %q "$here/restart-worker.sh") $(printf %q "$st")"
-(($(printf '%s' "$cmd" | wc -c) <= 1024)) || fail "its command line is over 1024 bytes"
 t=$(hhmmss "$(ku_now)")
-if [[ "$wmux" == herdr ]]; then
-  worker=$("$HERDR_BIN" workspace create --cwd "$KU_DIR" --label "kit-update restart $t" --no-focus 2>/dev/null \
-    | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
-  [[ -n "$worker" ]] || fail "herdr workspace create failed"
-  run_detached "$HERDR_BIN" pane run "$worker" "$cmd" || fail "herdr pane run failed"
+worker=kit-update-restart-$t n=1 # the worker of an earlier run may still be there
+if [[ "$wmux" == hc ]]; then
+  while hc_call get "$worker" >/dev/null 2>&1 && ((n++ < 9)); do worker=kit-update-restart-$t-$n; done
+  # run's program gets herdr-core's environment, not ours: pass what the worker needs, and TMUX_TMPDIR to find our tmux server
+  wenv=("PATH=$PATH")
+  for v in LANG "${!LC_@}" TMUX_TMPDIR; do [[ -n "${!v:-}" ]] && wenv+=("$v=${!v}"); done
+  run_detached hc_call run --bg --no-parent --name "$worker" --cwd "$KU_DIR" -- env "${wenv[@]}" bash "$here/restart-worker.sh" "$st" \
+    || fail "hc run failed"
 else
-  worker=kit-update-restart-$t n=1 # the worker pane of an earlier run may still be open
+  cmd="bash $(printf %q "$here/restart-worker.sh") $(printf %q "$st")"
+  (($(printf '%s' "$cmd" | wc -c) <= 1024)) || fail "its command line is over 1024 bytes"
   while tm has-session -t "=$worker" 2>/dev/null && ((n++ < 9)); do worker=kit-update-restart-$t-$n; done
   tm new-session -d -s "$worker" -c "$KU_DIR" 2>/dev/null || fail "tmux new-session failed"
   run_detached tm send-keys -t "$worker" -l "$cmd" \; send-keys -t "$worker" Enter || fail "tmux send-keys failed"
@@ -241,7 +224,11 @@ echo "Restarting ${#LIST[@]} session(s) when idle:"
 printf '  - %s\n' "${LIST[@]}"
 print_skipped
 if ((issuer)); then echo "This session: in the snapshot, goes last"; else echo "This session: not found — restart it yourself"; fi
-echo "Worker: $worker"
+if [[ "$wmux" == hc ]]; then
+  echo "Worker: $worker (watch: hc attach $worker · stop: Ctrl-C there, or hc kill $worker · when done: hc rm $worker)"
+else
+  echo "Worker: $worker"
+fi
 echo "Log: $LOG"
 echo "Handoffs: $HANDOFFS"
 exit 0

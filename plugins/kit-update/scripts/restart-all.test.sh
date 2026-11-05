@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-check for restart-lib.sh and restart-all.sh against a fake world: fake tmux, herdr, ps, clock and sleep,
+# Self-check for restart-lib.sh and restart-all.sh against a fake world: fake tmux, hc, herdr, ps, pgrep, clock and sleep,
 # and a fake config dir. Nothing real is touched: no ~/.claude, no real panes or processes.
 # Run: bash plugins/kit-update/scripts/restart-all.test.sh
 #
@@ -10,10 +10,14 @@
 #   $FAKE/cfg     CLAUDE_CONFIG_DIR: sessions/<pid>.json (fake_session), projects/<dir>/<sid>.jsonl
 #   $FAKE/panes, $FAKE/agents             what the fake tmux list-panes / herdr agent list print
 #   $FAKE/tmux-calls, $FAKE/herdr-calls   every call to the fake tmux / herdr, one per line
-#   $FAKE/workspaces                      what the fake herdr workspace list prints
+#   $FAKE/terms, $FAKE/hget-<t>           what the fake hc ls --json / get <t> --json print (term adds both; no terms: no
+#                                         server; no hget-<t>: not_found, exit 3)
+#   $FAKE/hc-calls, $FAKE/hc-env          every call to the fake hc, and the HC_TERMINAL_ID it saw (or unset)
+#   $FAKE/core-up                         the fake pgrep finds herdr-core (every reset_world puts it back)
+#   $FAKE/hook-hc-<cmd>                   sourced by the fake hc before it answers <cmd>
 #   $FAKE/tmux-sessions                   tmux session names that exist (has-session, new-session)
-#   $FAKE/ran         "<pane or session> <command>" per herdr pane run / tmux send-keys -l
-#   $FAKE/fail-launch                     makes herdr workspace create and tmux new-session fail
+#   $FAKE/ran         "<pane or session> <command>" per herdr pane run / tmux send-keys -l, "<name> <program>" per hc run
+#   $FAKE/fail-launch                     makes hc run and tmux new-session fail
 #   $FAKE/hook-<cmd>                      sourced by the fake tmux before it answers <cmd>
 #   $FAKE/hook-ps                         sourced by the fake ps before it answers (remove it inside to run once)
 #   KIT_FAKE_REAL_SLEEP=<seconds>         real time each fake sleep takes (default 0.01; a hook may change it for its nap)
@@ -123,9 +127,6 @@ echo "$*" >>"$FAKE/herdr-calls"
 case "$1 ${2:-}" in "agent prompt" | "agent rename" | "pane run") echo "{\"id\":\"cli:$1:$2\",\"result\":{}}" ;; esac # its reply, as herdr
 case "$1 ${2:-}" in
   "agent list") [[ -f "$FAKE/agents" ]] && cat "$FAKE/agents" ;;
-  "workspace list") [[ -f "$FAKE/workspaces" ]] && cat "$FAKE/workspaces" ;;
-  "workspace create") [[ ! -f "$FAKE/fail-launch" ]] \
-    && echo '{"result":{"workspace":{"workspace_id":"w9"},"root_pane":{"pane_id":"w9:p1"}}}' ;;
   "pane run") # pane run PANE TEXT: refused over 1024 bytes, else the shell in PANE runs it, as UTF-8 (herdr turns
     # other bytes into U+FFFD; dropped here)
     (($(printf '%s' "$4" | wc -c) <= 1024)) || { echo 'fake herdr: command too long' >&2; exit 1; }
@@ -150,6 +151,25 @@ case "$1 ${2:-}" in
     if [[ "$*" == *"--format ansi"* ]]; then printf '%s\n' "$s"; else printf '%s\n' "$s" | sed $'s/\e\\[[0-9;:]*m//g'; fi ;;
   "pane get") printf '{"result":{"pane":{"scroll":{"offset_from_bottom":%s}}}}\n' "$(cat "$FAKE/scroll-$3" 2>/dev/null || echo 0)" ;;
 esac
+EOF
+cat >"$FAKE/bin/hc" <<'EOF'
+#!/bin/bash
+# fake hc: calls logged to $FAKE/hc-calls, the HC_TERMINAL_ID it was given to $FAKE/hc-env; no $FAKE/terms means no server
+echo "$*" >>"$FAKE/hc-calls"
+echo "${HC_TERMINAL_ID-unset}" >>"$FAKE/hc-env"
+[[ -f "$FAKE/hook-hc-$1" ]] && . "$FAKE/hook-hc-$1"
+case "$1" in
+  ls) [[ -f "$FAKE/terms" ]] && cat "$FAKE/terms" || exit 1 ;;
+  get) [[ -f "$FAKE/hget-$2" ]] && cat "$FAKE/hget-$2" || { echo '{"error":{"code":"not_found"}}' >&2; exit 3; } ;;
+  run) # run --bg --no-parent --name NAME --cwd DIR -- PROGRAM...: hc starts PROGRAM itself, here it is only recorded
+    [[ ! -f "$FAKE/fail-launch" ]] || exit 1
+    echo "$5 ${*:9}" >>"$FAKE/ran"; echo "{\"address\":\"$5\"}" ;;
+esac
+EOF
+cat >"$FAKE/bin/pgrep" <<'EOF'
+#!/bin/bash
+# fake pgrep for herdr-core: found (0) with $FAKE/core-up, else 1
+[[ -f "$FAKE/core-up" ]]
 EOF
 cat >"$FAKE/react" <<'EOF'
 #!/bin/bash
@@ -176,6 +196,8 @@ esac
 sf_status "$pid" idle
 EOF
 mkdir -p "$FAKE/cbin"
+# a hc on PATH is the real one: nothing here may reach it
+printf '#!/bin/bash\necho "$*" >>"$FAKE/real-hc-called"\nexit 1\n' >"$FAKE/cbin/hc"
 cat >"$FAKE/cbin/claude" <<'EOF'
 #!/bin/bash
 # fake claude: --version, or a new Claude in pane $KIT_FAKE_PANE started by its shell $KIT_FAKE_PARENT (- : as the
@@ -192,11 +214,11 @@ else fake_proc "$new" "$sh" "$new" "$new" "ttys$old" claude; proc_set "$sh" 4 "$
 echo "$new" >"$FAKE/claude-$pane"
 life "$pane" dialog || fake_session "$new" "S$new" "$2" idle "$PWD"
 EOF
-chmod +x "$FAKE"/bin/* "$FAKE/react" "$FAKE/cbin/claude"
-unset HERDR_ENV HERDR_PANE_ID TMUX TMUX_PANE # the multiplexer this test runs in must not leak into the runs below
+chmod +x "$FAKE"/bin/* "$FAKE/react" "$FAKE/cbin/claude" "$FAKE/cbin/hc"
+unset HERDR_ENV HERDR_PANE_ID HC_TERMINAL_ID TMUX TMUX_PANE # the multiplexer this test runs in must not leak into the runs below
 export FAKE CLAUDE_CONFIG_DIR="$FAKE/cfg" PATH="$FAKE/cbin:$PATH" \
-  KIT_UPDATE_TMUX_BIN="$FAKE/bin/tmux" KIT_UPDATE_HERDR_BIN="$FAKE/bin/herdr" KIT_UPDATE_PS_BIN="$FAKE/bin/ps" \
-  KIT_UPDATE_CLOCK_BIN="$FAKE/bin/clock" KIT_UPDATE_SLEEP_BIN="$FAKE/bin/sleep"
+  KIT_UPDATE_TMUX_BIN="$FAKE/bin/tmux" KIT_UPDATE_HC_BIN="$FAKE/bin/hc" KIT_UPDATE_HERDR_BIN="$FAKE/bin/herdr" \
+  KIT_UPDATE_PGREP_BIN="$FAKE/bin/pgrep" KIT_UPDATE_PS_BIN="$FAKE/bin/ps" KIT_UPDATE_CLOCK_BIN="$FAKE/bin/clock" KIT_UPDATE_SLEEP_BIN="$FAKE/bin/sleep"
 
 fails=0
 check() { # $1 = label, $2 = condition result
@@ -401,11 +423,13 @@ done
 # --- restart-all.sh: snapshot, state file, lock and worker launch
 # The worker is never run: the fake pane run and send-keys only record its command line in $FAKE/ran.
 reset_world() {
-  rm -rf "${CFG:?}/sessions" "${CFG:?}/projects" "${KU_DIR:?}" "${FAKE:?}"/{panes,agents,workspaces,tmux-calls,herdr-calls,ran,tmux-sessions,fail-launch,hook-list-panes,hook-ps} \
+  rm -rf "${CFG:?}/sessions" "${CFG:?}/projects" "${KU_DIR:?}" "${FAKE:?}"/{panes,agents,tmux-calls,herdr-calls,ran,tmux-sessions,fail-launch,hook-list-panes,hook-ps} \
+    "${FAKE:?}"/{terms,terms.new,hget-*,hc-calls,hc-env,hook-hc-*} \
     "${FAKE:?}"/{warp,hook-sleep,screen-*,mode-*,scroll-*,claude-*,scenario-*,asked-*,prompted-*,pasted-*} \
     "${FAKE:?}"/{life-*,shell-*,hpanes,dead-*,roe-*,panepid-*,refuse-*,argv-*,cwd-*,hook-set-option,running,sleeping,fifo,pwned*,x,pane-list,agents-ok,armed}
   mkdir -p "$CFG/sessions"
   : >"$FAKE/procs"
+  touch "$FAKE/core-up"
 }
 ra() { /bin/bash "$here/restart-all.sh" 2>&1; }
 ra_as() { # PPID: run restart-all.sh as a process the fake ps knows, whose parent is PPID (exec keeps the pid)
@@ -416,7 +440,18 @@ agent() { # PANE NAME|null WORKSPACE SID [STATUS]: one entry of herdr agent list
   printf '{"pane_id":"%s","name":%s,"agent":"claude","agent_status":"%s","cwd":"/x","workspace_id":"%s","agent_session":{"value":"%s"}}' \
     "$1" "$2" "${5:-idle}" "$3" "$4"
 }
-agents() { local IFS=,; printf '{"result":{"agents":[%s]}}\n' "$*" >"$FAKE/agents"; }
+term() { # ADDR WHERE SHELL_PID FG_PID|null [AGENT] [STATE] [CWD] [FG_NAME]: a terminal, in hc ls and hc get (not a remote one's)
+  local a=$1 w=$2 sp=$3 fp=$4 agent=${5:-claude-code} state=${6:-live} cwd=${7:-/x/$1} fn=${8:-2.1.309}
+  [[ -f "$FAKE/terms" ]] || echo '{"terminals":[]}' >"$FAKE/terms"
+  jq -c --arg a "$a" --arg w "$w" --arg agent "$agent" --arg st "$state" --arg cwd "$cwd" \
+    '.terminals += [{address: $a, agent: $agent, state: $st, where: $w, cwd: $cwd}]' "$FAKE/terms" >"$FAKE/terms.new" \
+    && mv "$FAKE/terms.new" "$FAKE/terms"
+  [[ "$a" == */* ]] && return 0
+  jq -nc --arg a "$a" --arg w "$w" --arg agent "$agent" --arg st "$state" --arg cwd "$cwd" --arg fn "$fn" \
+    --argjson sp "$sp" --argjson fp "$fp" '{address: $a, agent: $agent, state: $st, pid: $sp, argv: ["/bin/zsh", "-l"],
+      cwd: $cwd, where: (if $w == "" then null else $w end), status: null,
+      foreground: (if $fp == null then null else {pid: $fp, name: $fn, argv: ["claude"], cwd: $cwd} end)}' >"$FAKE/hget-$a"
+}
 tpane() { printf '%s\t%s\t%s\n' "$@" >>"$FAKE/panes"; } # PANE_ID SESSION:WINDOW.PANE PANE_PID
 sf_set() { # PID JQ_PROGRAM: edit a session file (the hooks use this too: no restart-lib here)
   jq "$2" "$CLAUDE_CONFIG_DIR/sessions/$1.json" >"$FAKE/s.json" && mv "$FAKE/s.json" "$CLAUDE_CONFIG_DIR/sessions/$1.json"
@@ -427,25 +462,27 @@ launches() { cat "$FAKE/ran" 2>/dev/null | wc -l | tr -d ' '; }
 
 reset_world
 out=$(ra)
-grep -q 'No tmux or herdr server' <<<"$out" && [[ ! -e "$LOCK" ]]; check "no server: says so, no lock left" $?
+grep -q 'No tmux or herdr-core server' <<<"$out" && [[ ! -e "$LOCK" ]]; check "no server: says so, no lock left" $?
 
-# One world for the snapshot rules: herdr agents w1:p1-p6, tmux panes %1-%8 on server 130.
+# One world for the snapshot rules: hc terminals t1-t13 (t6: hc get fails; t10, t11 and m1/t3 are not Claude, not live,
+# remote), tmux panes %1-%9 on server 130.
 reset_world
-echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"alpha work"},{"workspace_id":"w2","label":"beta"}]}}' >"$FAKE/workspaces"
-fake_proc 100 1 100 101 ttys001 -zsh # w1:p1: Claude 101 under a login shell; its Bash tool shell 102 runs the script
+fake_proc 100 1 100 101 ttys001 -zsh # t1: Claude 101 under a login shell; its Bash tool shell 102 runs the script
 fake_proc 101 100 101 101 ttys001 'claude --name alpha'; fake_session 101 S1 alpha idle /x/alpha
 fake_proc 102 101 102 101 ttys001 "/bin/zsh -c source $CFG/shell-snapshots/snapshot-zsh-1-x.sh && eval 'bash restart-all.sh'"
-fake_proc 110 1 110 111 ttys002 'zsh -ic claude' # w1:p2: Claude under zsh -ic
+fake_proc 110 1 110 111 ttys002 'zsh -ic claude' # t2: Claude under zsh -ic
 fake_proc 111 110 111 111 ttys002 claude; fake_session 111 S2 beta idle /x/beta
+fake_proc 120 1 120 121 ttys016 -zsh # t3: a tmux client in front of its shell; Claude 132 is in tmux
+fake_proc 121 120 121 121 ttys016 'tmux attach'
 fake_proc 130 1 130 0 '??' 'tmux new -s main' # the tmux server
-fake_proc 131 130 131 132 ttys003 -zsh # %1, which herdr also lists as w1:p3
+fake_proc 131 130 131 132 ttys003 -zsh # %1
 fake_proc 132 131 132 132 ttys003 claude; fake_session 132 S3 gamma idle /x/gamma
-fake_proc 140 1 140 141 ttys004 -zsh # w1:p4 and %2 both run session S5
+fake_proc 140 1 140 141 ttys004 -zsh # t4 and %2 both run session S5
 fake_proc 141 140 141 141 ttys004 'claude --continue'; fake_session 141 S5 delta idle /x/delta
 fake_proc 142 130 142 143 ttys005 -zsh
 fake_proc 143 142 143 143 ttys005 'claude --continue'; fake_session 143 S5 delta idle /x/delta
 fake_proc 151 130 151 151 ttys006 'claude -p hi'; fake_session 151 S6 eps busy /x/eps; sf_set 151 '.kind = "sdk-cli"' # %3
-fake_proc 160 1 160 161 ttys007 -zsh # w1:p5: a session file without status
+fake_proc 160 1 160 161 ttys007 -zsh # t5: a session file without status
 fake_proc 161 160 161 161 ttys007 claude; fake_session 161 S7 zeta idle /x/zeta; sf_set 161 'del(.status)'
 fake_proc 171 130 171 172 ttys008 'node /x/wrap.js' # %4: Claude under a wrapper
 fake_proc 172 171 172 172 ttys008 claude; fake_session 172 S8 eta idle /x/eta
@@ -453,59 +490,75 @@ fake_proc 181 130 181 181 ttys009 'claude --team-name t1'; fake_session 181 S9 t
 fake_proc 182 130 182 182 ttys010 'claude --agent-id a1@t1'; fake_session 182 S10 t1 idle /x/team
 fake_proc 183 130 183 183 ttys011 'claude --parent-session-id S0'; fake_session 183 S11 t1 idle /x/team
 fake_proc 191 130 191 191 ttys012 'claude --name theta'; fake_session 191 S12 theta idle /x/theta # %8: Claude is the pane process
-fake_proc 200 1 200 0 '??' 'tmux -L other new' # w1:p6: inside a tmux server that is not listed
-fake_proc 201 200 201 202 ttys013 zsh
-fake_proc 202 201 202 202 ttys013 claude; fake_session 202 S13 iota idle /x/iota
-# w1:p7: session S14 has no session file here (a Claude of another config dir)
+fake_proc 200 1 200 201 ttys013 -zsh # t7: the Claude in front has no session file here (one of another config dir)
+fake_proc 201 200 201 201 ttys013 claude
+fake_proc 210 1 210 210 ttys015 claude; fake_session 210 S15 lambda idle /x/lambda # t8: Claude is the terminal's program
+fake_proc 215 1 215 215 ttys017 -zsh # t9: nothing in front but the shell (foreground null)
 fake_proc 220 130 220 220 ttys014 claude; fake_session 220 S20 kappa idle /x/kappa; sf_set 220 'del(.sessionId)' # %9
-agents "$(agent w1:p1 '"alpha"' w1 S1)" "$(agent w1:p2 null w2 S2)" "$(agent w1:p3 null w1 S3)" \
-  "$(agent w1:p4 null w1 S5)" "$(agent w1:p5 null w1 S7)" "$(agent w1:p6 null w1 S13)" "$(agent w1:p7 null w1 S14)"
+fake_proc 230 1 230 232 ttys018 -zsh # t12: Claude 232 under a script run by the terminal's shell
+fake_proc 231 230 231 232 ttys018 'sh wrap.sh'
+fake_proc 232 231 232 232 ttys018 claude; fake_session 232 S17 mu idle /x/mu
+fake_proc 240 1 240 241 ttys019 -zsh # t13: a session file without sessionId
+fake_proc 241 240 241 241 ttys019 claude; fake_session 241 S18 nu idle /x/nu; sf_set 241 'del(.sessionId)'
+term t1 'alpha work' 100 101; term t2 beta 110 111; term t3 'alpha work' 120 121 claude-code live /x/gamma tmux
+term t4 'alpha work' 140 141; term t5 'alpha work' 160 161
+term t6 'alpha work' 100 101; rm "$FAKE/hget-t6"
+term t7 'alpha work' 200 201; term t8 'alpha work' 210 210; term t9 'alpha work' 215 null
+term t10 'alpha work' 100 101 zsh; term t11 'alpha work' 100 101 claude-code finished; term m1/t3 'alpha work' 100 101
+term t12 'alpha work' 230 232; term t13 'alpha work' 240 241
 tpane %1 main:0.0 131; tpane %2 main:0.1 142; tpane %3 main:0.2 151; tpane %4 main:0.3 171
 tpane %5 main:1.0 181; tpane %6 main:1.1 182; tpane %7 main:1.2 183; tpane %8 main:2.0 191; tpane %9 main:3.0 220
 
-out=$(HERDR_ENV=1 ra_as 102)
-[[ "$(row 101 | cut -f3)" == w1:p1 ]]; check "herdr: pid found through agent_session and session file" $?
-[[ -z "$(row 111)" ]] && grep -q '^  - beta (herdr w1:p2) — .*zsh -ic claude' <<<"$out"; check "herdr: parent shell zsh -ic is skipped" $?
-[[ "$(row 101 | cut -f8)" == 100 ]]; check "herdr: login shell -zsh is kept" $?
-[[ "$(awk -F'\t' '$5 == 132 { print $2, $3 }' "$(state)")" == "tmux %1" ]] && ! grep -q 'w1:p3' <<<"$out"
-check "tmux in herdr: kept once, on the tmux side" $?
+out=$(HC_TERMINAL_ID=t1 ra_as 102)
+[[ "$(row 101 | cut -f3)" == t1 ]]; check "hc: pid found through foreground and session file" $?
+[[ -z "$(row 111)" ]] && grep -q '^  - beta (hc t2) — .*zsh -ic claude' <<<"$out"; check "hc: parent shell zsh -ic is skipped" $?
+[[ "$(row 101 | cut -f8)" == 100 ]]; check "hc: login shell -zsh is kept" $?
+[[ "$(awk -F'\t' '$5 == 132 { print $2, $3 }' "$(state)")" == "tmux %1" ]] && grep -qx '  - gamma (tmux main:0.0)' <<<"$out" \
+  && grep -q '^  - alpha work (hc t3) — .*(tmux)' <<<"$out"
+check "hc terminal running tmux: skipped as not Claude, kept once on the tmux side" $?
 [[ -z "$(row 141)$(row 143)" ]] && grep -qx '  - delta (tmux main:0.1) — not exactly one live process on session S5' <<<"$out" \
-  && grep -qx '  - alpha work (herdr w1:p4) — not exactly one live process on session S5' <<<"$out"
+  && grep -qx '  - delta (hc t4) — not exactly one live process on session S5' <<<"$out"
 check "two live processes share a sessionId: both skipped" $?
-grep -qx '  - alpha work (herdr w1:p7) — no live Claude Code process for session S14' <<<"$out" \
+grep -qx '  - nu (hc t13) — no live Claude Code process for session ?' <<<"$out" && [[ -z "$(row 241)" ]] \
   && grep -qx '  - kappa (tmux main:3.0) — no live Claude Code process for session ?' <<<"$out" && [[ -z "$(row 220)" ]]
-check "no live process on the session (herdr), or no session id (tmux): skipped, says so" $?
+check "no session id (hc and tmux): skipped, says so" $?
+grep -q '^  - alpha work (hc t7) — .*(2\.1\.309)' <<<"$out" && [[ -z "$(row 201)" ]]
+check "foreground without a session file here: skipped, says so" $?
+grep -q '^  - alpha work (hc t9) — .*(nothing)' <<<"$out"; check "no foreground: skipped" $?
+grep -q '^  - alpha work (hc t8) — .*no shell to relaunch in' <<<"$out" && [[ -z "$(row 210)" ]]
+check "Claude is the terminal's program: no shell to relaunch in" $?
+grep -q '^  - alpha work (hc t12) — .*parent' <<<"$out" && [[ -z "$(row 232)" ]]
+check "Claude's parent is not the terminal's shell: skipped" $?
+grep -q '^  - alpha work (hc t6) — herdr-core does not answer' <<<"$out"; check "hc get fails: skipped, herdr-core does not answer" $?
 [[ -z "$(row 151)" ]] && grep -q '(tmux main:0.2) — not interactive' <<<"$out"; check "kind not interactive: skipped" $?
-[[ -z "$(row 161)" ]] && grep -q '(herdr w1:p5) — .*status' <<<"$out"; check "session file missing status: skipped" $?
+[[ -z "$(row 161)" ]] && grep -q '(hc t5) — .*status' <<<"$out"; check "session file missing status: skipped" $?
 [[ -z "$(row 172)" ]] && grep -q '(tmux main:0.3) — .*wrapper' <<<"$out"; check "tmux wrapper process: skipped" $?
 [[ -z "$(row 181)$(row 182)$(row 183)" && "$(grep -c 'teammate' <<<"$out")" == 3 ]]; check "teammate: skipped" $?
-[[ -z "$(row 202)" ]] && grep -q '(herdr w1:p6) — .*tmux' <<<"$out"
-check "herdr agent with tmux ancestor not in the tmux list: still dropped" $?
+! grep -q 't10\|t11\|m1/t3' <<<"$out" && ! grep -q '^get \(t10\|t11\|m1/t3\) ' "$FAKE/hc-calls"
+check "zsh, finished and remote terminals are not listed" $?
 grep -qx 'This session: in the snapshot, goes last' <<<"$out" \
   && [[ "$(awk -F'\t' '$1 == "pane" { printf "%s:%s ", $5, $13 }' "$(state)")" == "132:0 191:0 101:1 " ]]
 check "issuer found through the ppid chain" $?
-want=$(printf '%s\t' pane herdr w1:p1 'alpha work' 101 'Thu Oct  2 07:43:41 2026' ttys001 100 S1 alpha 2.1.309 /x/alpha 1 alpha)
+want=$(printf '%s\t' pane hc t1 'alpha work' 101 'Thu Oct  2 07:43:41 2026' ttys001 100 S1 alpha 2.1.309 /x/alpha 1 '')
 [[ "$(row 101)" == "$want"'claude --name alpha' ]]; check "state rows carry every field" $?
 want=$(printf '%s\t' pane tmux %8 main:2.0 191 'Thu Oct  2 07:43:11 2026' ttys012 - S12 theta 2.1.309 /x/theta 0 '')
 [[ "$(row 191)" == "$want"'claude --name theta' && "$(row 132 | cut -f4,8)" == $'main:0.0\t131' ]]
 check "tmux rows: session:window.pane label, the pane's shell or - as shell pid" $?
-grep -qx 'Restarting 3 session(s) when idle:' <<<"$out" && grep -qx '  - alpha (herdr w1:p1)' <<<"$out" \
+grep -qx 'Restarting 3 session(s) when idle:' <<<"$out" && grep -qx '  - alpha (hc t1)' <<<"$out" \
   && grep -qx '  - gamma (tmux main:0.0)' <<<"$out" && grep -qx "Log: $LOG" <<<"$out" && grep -qx "Handoffs: $HANDOFFS" <<<"$out" \
   && [[ -d "$HANDOFFS" ]]
 check "output: who restarts, the log and the handoffs folder" $?
-t=$(date -r "$(cat "$FAKE/now")" +%H%M%S)
-line=$(cat "$FAKE/ran" 2>/dev/null); cmd=${line#w9:p1 }
-[[ "$(launches)" == 1 && "$line" == "w9:p1 "* && "$cmd" == "bash $here/restart-worker.sh $(state)" ]] \
-  && (($(printf '%s' "$cmd" | wc -c) <= 1024)) && [[ -f "$(state)" && -f "$here/restart-worker.sh" ]] \
-  && grep -qxF "workspace create --cwd $KU_DIR --label kit-update restart $t --no-focus" "$FAKE/herdr-calls" \
-  && [[ "$(sed -n 1,3p "$(state)")" == $'config\t'"$CFG"$'\nsocket\t\nmux\therdr' ]] \
-  && grep -qx 'Worker: w9:p1' <<<"$out" && ! grep -q new-session "$FAKE/tmux-calls" && ! grep -q '^{' "$LOG"
-check "launch in herdr when HERDR_ENV is set (herdr's JSON reply not in the log)" $?
 
 rm -rf "${LOCK:?}" "${FAKE:?}/ran"
 out=$(ra)
 grep -qx 'This session: not found — restart it yourself' <<<"$out" && [[ "$(row 101 | cut -f13)" == 0 ]]
 check "issuer not in snapshot: says so" $?
+
+reset_world
+fake_proc 100 1 100 101 ttys001 -zsh; fake_proc 101 100 101 101 ttys001 claude; fake_session 101 S1 omega idle /x/omega
+term t1 '' 100 101 claude-code live /x/omega # where "": the cwd folder is the label
+out=$(ra)
+[[ "$(row 101 | cut -f4)" == omega ]]; check "label falls back to the cwd folder" $?
 
 # The rest: one Claude pane in tmux. The fake clock is at the real time, so a lock made now is fresh.
 lock_world() {
@@ -516,6 +569,14 @@ lock_world() {
   date +%s >"$FAKE/now"
 }
 old_lock() { touch -t 202001010000 "$LOCK"; } # mtime far older than 60 s
+# One terminal t1 with Claude 101 under shell 100, on its own (hc_world) or beside lock_world's tmux pane (both_world).
+hc_claude() {
+  fake_proc 100 1 100 101 ttys001 -zsh
+  fake_proc 101 100 101 101 ttys001 claude; fake_session 101 S1 alpha idle /x/alpha
+  term t1 'alpha work' 100 101
+}
+hc_world() { reset_world; hc_claude; date +%s >"$FAKE/now"; }
+both_world() { lock_world; hc_claude; }
 
 # A Claude a restart relaunched has its first message, the handoff, on its command line.
 lock_world
@@ -533,14 +594,54 @@ grep -q "^-S $FAKE/sock new-session -d -s kit-update-restart-[0-9]\{6\} -c $KU_D
 check "launch in tmux when only TMUX is set" $?
 lock_world
 out=$(ra)
-grep -q '^new-session -d -s kit-update-restart-' "$FAKE/tmux-calls" && ! grep -q 'workspace create' "$FAKE/herdr-calls" \
+grep -q '^new-session -d -s kit-update-restart-' "$FAKE/tmux-calls" && ! grep -q '^run ' "$FAKE/hc-calls" \
   && [[ "$(sed -n 2,3p "$(state)")" == $'socket\t\nmux\ttmux' ]]
-check "neither HERDR_ENV nor TMUX: uses the multiplexer that has a server" $?
+check "neither HC_TERMINAL_ID nor TMUX: tmux alone has a server, the worker is in tmux" $?
+hc_world
+out=$(ra)
+grep -q '^run --bg --no-parent --name kit-update-restart-' "$FAKE/hc-calls" && ! grep -q new-session "$FAKE/tmux-calls" \
+  && [[ "$(sed -n 2,3p "$(state)")" == $'socket\t\nmux\thc' ]]
+check "neither HC_TERMINAL_ID nor TMUX: hc alone has a server, the worker is in hc" $?
 lock_world
 t=$(date -r "$(cat "$FAKE/now")" +%H%M%S); echo "kit-update-restart-$t" >"$FAKE/tmux-sessions"
 out=$(ra)
 grep -qxF "new-session -d -s kit-update-restart-$t-2 -c $KU_DIR" "$FAKE/tmux-calls" && grep -qx "Worker: kit-update-restart-$t-2" <<<"$out"
 check "second run while previous worker pane is open" $?
+
+# The worker in herdr-core: hc run, with the PATH, LANG, LC_* and TMUX_TMPDIR of the caller (the program gets the core's own).
+hc_world
+out=$(unset ${!LC_*}; HC_TERMINAL_ID=t1 LANG=th_TH.UTF-8 LC_CTYPE=UTF-8 TMUX_TMPDIR=$FAKE/tt ra)
+t=$(date -r "$(cat "$FAKE/now")" +%H%M%S); w=kit-update-restart-$t
+[[ "$(cat "$FAKE/ran" 2>/dev/null)" == "$w env PATH=$PATH LANG=th_TH.UTF-8 LC_CTYPE=UTF-8 TMUX_TMPDIR=$FAKE/tt bash $here/restart-worker.sh $(state)" ]] \
+  && grep -qxF "run --bg --no-parent --name $w --cwd $KU_DIR -- env PATH=$PATH LANG=th_TH.UTF-8 LC_CTYPE=UTF-8 TMUX_TMPDIR=$FAKE/tt bash $here/restart-worker.sh $(state)" "$FAKE/hc-calls" \
+  && [[ "$(sed -n 1,3p "$(state)")" == $'config\t'"$CFG"$'\nsocket\t\nmux\thc' && -f "$here/restart-worker.sh" ]] \
+  && grep -qx "Worker: $w (watch: hc attach $w · stop: Ctrl-C there, or hc kill $w · when done: hc rm $w)" <<<"$out" \
+  && ! grep -q new-session "$FAKE/tmux-calls" && ! grep -q '{' "$LOG" && [[ -s "$FAKE/hc-env" ]] && ! grep -qvx unset "$FAKE/hc-env"
+check "launch in hc carries PATH, LANG and TMUX_TMPDIR (hc never sees HC_TERMINAL_ID, hc's reply not in the log)" $?
+hc_world
+out=$(unset ${!LC_*} LANG TMUX_TMPDIR; LC_ALL=C LC_MESSAGES=en_US.UTF-8 ra)
+grep -q ' LC_ALL=C ' "$FAKE/ran" && grep -q ' LC_MESSAGES=en_US.UTF-8 ' "$FAKE/ran" && ! grep -q 'LANG=\|TMUX_TMPDIR=' "$FAKE/ran"
+check "launch in hc passes every LC_* with a value, and no LANG or TMUX_TMPDIR that is not set" $?
+hc_world
+t=$(date -r "$(cat "$FAKE/now")" +%H%M%S); echo '{}' >"$FAKE/hget-kit-update-restart-$t"
+out=$(ra)
+grep -qF -- "--name kit-update-restart-$t-2 --cwd" "$FAKE/hc-calls" && grep -q "^Worker: kit-update-restart-$t-2 (watch: hc attach kit-update-restart-$t-2 " <<<"$out"
+check "second run while the previous worker terminal is there (hc)" $?
+
+# Where the worker goes, with both a tmux pane and a terminal in the snapshot.
+both_world; rm "$FAKE/core-up"
+out=$(ra)
+[[ ! -e "$FAKE/hc-calls" && -n "$(row 132)" && -z "$(row 101)" && "$(launches)" == 1 ]] && grep -q '^new-session -d -s kit-update-restart-' "$FAKE/tmux-calls"
+check "no core: hc never called, worker in tmux" $?
+both_world; rm "$FAKE/core-up"
+out=$(HC_TERMINAL_ID=t1 TMUX="$FAKE/sock,1,0" ra)
+[[ ! -e "$FAKE/hc-calls" && -n "$(row 132)" && "$(launches)" == 1 ]] && grep -q "^-S $FAKE/sock new-session -d -s kit-update-restart-" "$FAKE/tmux-calls"
+check "stale HC_TERMINAL_ID inside tmux: hc never called, worker in tmux" $?
+both_world
+out=$(HC_TERMINAL_ID=t1 TMUX="$FAKE/sock,1,0" ra)
+[[ -n "$(row 101)" && -n "$(row 132)" && "$(launches)" == 1 ]] && ! grep -q '^run ' "$FAKE/hc-calls" \
+  && grep -q "^-S $FAKE/sock new-session -d -s kit-update-restart-" "$FAKE/tmux-calls"
+check "HC_TERMINAL_ID inside tmux, core up: terminals in the snapshot, worker in tmux" $?
 
 lock_world
 mkdir -p "$LOCK"; printf 'TOKW 555 w8:p2\ncmd bash /x/restart-worker.sh /x/state.TOKW\n' >"$LOCK/owner"
@@ -579,10 +680,19 @@ echo "echo 'starting OTHER' >'$LOCK/owner'" >"$FAKE/hook-list-panes" # another c
 out=$(ra)
 [[ "$(launches)" == 0 && "$(lock_token)" == OTHER ]] && ! ls "$LOCK"/state.* >/dev/null 2>&1 && grep -q 'lock' <<<"$out"
 check "lost the lock after writing state: no launch" $?
+hc_world
+echo "echo 'starting OTHER' >'$LOCK/owner'" >"$FAKE/hook-hc-ls" # the same in hc
+out=$(ra)
+[[ "$(launches)" == 0 && "$(lock_token)" == OTHER ]] && ! ls "$LOCK"/state.* >/dev/null 2>&1 && ! grep -q '^run ' "$FAKE/hc-calls"
+check "lost the lock (hc): no hc run" $?
 lock_world
 touch "$FAKE/fail-launch"
 out=$(ra); rc=$?
-[[ $rc == 1 && ! -e "$LOCK" && "$(launches)" == 0 ]] && grep -q 'Could not start the worker' <<<"$out"; check "launch fails: lock removed" $?
+[[ $rc == 1 && ! -e "$LOCK" && "$(launches)" == 0 ]] && grep -q 'Could not start the worker' <<<"$out"; check "launch fails: lock removed (tmux)" $?
+hc_world
+touch "$FAKE/fail-launch"
+out=$(ra); rc=$?
+[[ $rc == 1 && ! -e "$LOCK" && "$(launches)" == 0 ]] && grep -q 'Could not start the worker: hc run failed' <<<"$out"; check "launch fails: lock removed (hc)" $?
 
 # A caller judged the lock stale, then another caller made a fresh one or its worker started,
 # before the move: lock_takeover runs here as that delayed caller would, after the swap.
@@ -1134,6 +1244,8 @@ rw_bg 0 "$FAKE/fifo"
 await "$FAKE/sleeping" && kill -HUP -"$WP"; kill "$cp" 2>/dev/null; wait "$cp" 2>/dev/null; wait "$WP" 2>/dev/null; rc=$?
 [[ $rc == 0 && -s "$FAKE/argv-w1:p1" && ! -e "$LOCK" ]] && grep -qx 'Summary  restarted: 1 · skipped: 0' "$LOG"
 check "HUP with stdout closed: worker keeps going and finishes the relaunch" $?
+
+! test -e "$FAKE/real-hc-called"; check "the real hc is never called" $?
 
 ((fails)) && { echo "$fails failed"; exit 1; }
 echo "all passed"
