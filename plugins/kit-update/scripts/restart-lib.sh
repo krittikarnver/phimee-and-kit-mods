@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kit-update restart-lib — process, session file, transcript and log helpers for restart.
+# kit-update restart-lib — process, session file, transcript, herdr-core terminal and log helpers for restart.
 #
 # Source this file; it only defines functions (and sources pane-lib.sh). Call
 # ku_paths first: the other helpers read what it sets. It creates nothing, so
@@ -20,7 +20,6 @@ ku_paths() {
   LOG="$KU_DIR/restart.log"
   HANDOFFS="$KU_DIR/handoffs"
   TMUX_BIN="${KIT_UPDATE_TMUX_BIN:-tmux}"
-  HERDR_BIN="${KIT_UPDATE_HERDR_BIN:-herdr}"
   PS_BIN="${KIT_UPDATE_PS_BIN:-ps}"
 }
 
@@ -256,9 +255,28 @@ activity_after() { # FILE OFFSET
   transcript_jq "$1" "$2" 'any(entries[]; is_prompt or .type == "assistant")' -e >/dev/null
 }
 
+# Terminal T as herdr-core sees it (hc get): 0 while it is live, its status word on stdout (empty when it has
+# none); 1 when it is gone (no such terminal, or its program finished); 2 when that is unknown (hc failed, or an
+# answer that does not read), which is no proof that it is gone.
+hc_term() {
+  local j s
+  j=$(hc_call get "$1" --json 2>/dev/null)
+  case $? in
+    0) ;;
+    3) return 1 ;;
+    *) return 2 ;;
+  esac
+  s=$(jq -r '.state + " " + (.status.state // "")' <<<"$j" 2>/dev/null) || return 2
+  case $s in
+    "live "*) printf '%s\n' "${s#live }" ;;
+    "finished "*) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 # Run CMD in its own process group, so Ctrl-C or HUP sent to the worker's pane
 # can't cut it halfway (then nobody knows whether its keys arrived). Its stderr goes
-# to $LOG; its stdout (herdr's JSON reply) nowhere. Returns CMD's exit status. Job
+# to $LOG; its stdout (hc's reply) nowhere. Returns CMD's exit status. Job
 # control is on only while CMD starts: left on, the foreground commands get their own
 # group and Ctrl-C misses the worker's trap.
 # wait's stderr is dropped: if CMD dies of a signal, bash prints "Terminated: 15 ..." there.

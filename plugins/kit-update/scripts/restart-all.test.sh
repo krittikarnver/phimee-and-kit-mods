@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Self-check for restart-lib.sh and restart-all.sh against a fake world: fake tmux, hc, herdr, ps, pgrep, clock and sleep,
-# and a fake config dir. Nothing real is touched: no ~/.claude, no real panes or processes.
+# Self-check for restart-lib.sh, restart-all.sh and restart-worker.sh against a fake world: fake tmux, hc, hc-screen.pl,
+# ps, pgrep, clock and sleep, and a fake config dir. Nothing real is touched: no ~/.claude, no real panes or processes.
 # Run: bash plugins/kit-update/scripts/restart-all.test.sh
 #
 # The fake world, for the sections below:
@@ -8,38 +8,38 @@
 #                 (fake_proc adds a row, fake_kill removes it; the fake ps reads it)
 #   $FAKE/now     the clock in epoch seconds, from 1000000; fake sleep N adds N to it
 #   $FAKE/cfg     CLAUDE_CONFIG_DIR: sessions/<pid>.json (fake_session), projects/<dir>/<sid>.jsonl
-#   $FAKE/panes, $FAKE/agents             what the fake tmux list-panes / herdr agent list print
-#   $FAKE/tmux-calls, $FAKE/herdr-calls   every call to the fake tmux / herdr, one per line
+#   $FAKE/panes                           what the fake tmux list-panes prints
+#   $FAKE/tmux-calls                      every call to the fake tmux, one per line
 #   $FAKE/terms, $FAKE/hget-<t>           what the fake hc ls --json / get <t> --json print (term adds both; no terms: no
 #                                         server; no hget-<t>: not_found, exit 3)
 #   $FAKE/hc-calls, $FAKE/hc-env          every call to the fake hc, and the HC_TERMINAL_ID it saw (or unset)
 #   $FAKE/core-up                         the fake pgrep finds herdr-core (every reset_world puts it back)
 #   $FAKE/hook-hc-<cmd>                   sourced by the fake hc before it answers <cmd>
 #   $FAKE/tmux-sessions                   tmux session names that exist (has-session, new-session)
-#   $FAKE/ran         "<pane or session> <command>" per herdr pane run / tmux send-keys -l, "<name> <program>" per hc run
+#   $FAKE/ran         "<pane or session> <command>" per tmux send-keys -l, "<name> <program>" per hc run
 #   $FAKE/fail-launch                     makes hc run and tmux new-session fail
 #   $FAKE/hook-<cmd>                      sourced by the fake tmux before it answers <cmd>
 #   $FAKE/hook-ps                         sourced by the fake ps before it answers (remove it inside to run once)
 #   KIT_FAKE_REAL_SLEEP=<seconds>         real time each fake sleep takes (default 0.01; a hook may change it for its nap)
-# and for the worker (fake Claude in the panes):
+# and for the worker (fake Claude in the panes and terminals):
 #   $FAKE/warp                            seconds each fake sleep moves the clock, whatever it is asked for
 #   $FAKE/hook-sleep                      sourced by the fake sleep after the clock moved ($now), with $FAKE/lib.sh
 #   $FAKE/lib.sh                          the test's helpers that hooks and react use (written by the worker section)
-#   $FAKE/screen-<pane>                   what capture-pane / agent read show (default: an empty ❯ prompt); its
-#                                         escape codes only with capture-pane -e / agent read --format ansi
-#   $FAKE/mode-<pane>, $FAKE/scroll-<pane>  #{pane_in_mode} / herdr scroll.offset_from_bottom (default 0)
+#   $FAKE/screen-<pane>                   what capture-pane / the fake hc-screen.pl show (default: an empty ❯ prompt); its
+#                                         escape codes only with capture-pane -e, always from hc-screen.pl
+#   $FAKE/noscreen-<t>                    the fake hc-screen.pl cannot read terminal <t> (exit 1, nothing printed)
+#   $FAKE/mode-<pane>                     #{pane_in_mode} (default 0)
+#   $FAKE/hget-<t>                        hget T STATE [STATUS] writes it: wpane live and done, fake_exit live and no status
 #   $FAKE/claude-<pane>                   the pid of the fake Claude in <pane>
 #   $FAKE/scenario-<pane>                 how it answers a request, one line per request (the last line stays)
 #   $FAKE/asked-<pane>                    "<time> <nonce>" per handoff request that reached <pane>
-#   $FAKE/prompted-<pane>, $FAKE/pasted-<pane>  the text of the last handoff request by herdr agent prompt / tmux paste
+#   $FAKE/prompted-<pane>, $FAKE/pasted-<pane>  the text of the last handoff request by hc send / tmux paste
 # and for /exit and the relaunch (fake_exit, fake_run and the fake claude on PATH, from $FAKE/cbin):
 #   $FAKE/life-<pane>                     how its Claude lives, one word a line: no-exit (/exit does nothing), exit-fails
-#                                         (herdr agent prompt /exit fails, Claude exits all the same), vim (after /exit
-#                                         something else is in front of its shell), slow-run (herdr pane run takes 1 s),
+#                                         (hc send /exit fails, Claude exits all the same), vim (after /exit something
+#                                         else is in front of its shell), slow-run (hc send of the relaunch takes 1 s),
 #                                         dialog (the new Claude makes no session file), nostart (no new Claude at all)
-#   $FAKE/shell-<pane>                    the pid of its shell, which runs what herdr pane run / tmux send-keys -l type
-#   $FAKE/hpanes                          the herdr panes, one id a line, for herdr pane list (agent list drops a pane
-#                                         once its Claude exits); $FAKE/pane-list, when there, is sourced to answer instead
+#   $FAKE/shell-<pane>                    the pid of its shell, which runs what hc send / tmux send-keys -l type
 #   $FAKE/dead-<pane>, $FAKE/roe-<pane>, $FAKE/panepid-<pane>  tmux #{pane_dead} (1), the pane's own remain-on-exit,
 #                                         #{pane_pid} after respawn-pane; $FAKE/refuse-<pane> refuses one respawn-pane
 #   $FAKE/argv-<pane>, $FAKE/cwd-<pane>   the argv (NUL after each) and folder the new claude started with
@@ -120,38 +120,6 @@ case "$1" in
     fi ;;
 esac
 EOF
-cat >"$FAKE/bin/herdr" <<'EOF'
-#!/bin/bash
-# fake herdr: calls logged to $FAKE/herdr-calls; no $FAKE/agents means no server
-echo "$*" >>"$FAKE/herdr-calls"
-case "$1 ${2:-}" in "agent prompt" | "agent rename" | "pane run") echo "{\"id\":\"cli:$1:$2\",\"result\":{}}" ;; esac # its reply, as herdr
-case "$1 ${2:-}" in
-  "agent list") [[ -f "$FAKE/agents" ]] && cat "$FAKE/agents" ;;
-  "pane run") # pane run PANE TEXT: refused over 1024 bytes, else the shell in PANE runs it, as UTF-8 (herdr turns
-    # other bytes into U+FFFD; dropped here)
-    (($(printf '%s' "$4" | wc -c) <= 1024)) || { echo 'fake herdr: command too long' >&2; exit 1; }
-    echo "$3 $4" >>"$FAKE/ran"
-    if [[ -f "$FAKE/claude-$3" ]]; then
-      . "$FAKE/lib.sh"; life "$3" slow-run && { touch "$FAKE/running"; sleep 1; }
-      fake_run "$3" "$(printf '%s' "$4" | iconv -c -f UTF-8 -t UTF-8)"
-    fi ;;
-  "pane list")
-    if [[ -f "$FAKE/pane-list" ]]; then . "$FAKE/pane-list"
-    else printf '{"result":{"panes":[%s]}}\n' "$(sed 's/.*/{"pane_id":"&"}/' "$FAKE/hpanes" 2>/dev/null | paste -sd, -)"; fi ;;
-  "agent prompt") # agent prompt PANE TEXT: the fake Claude in PANE reads it
-    if [[ "$4" == '[kit-update restart '* ]]; then
-      printf '%s' "$4" >"$FAKE/prompted-$3"
-      n=${4#\[kit-update restart }; n=${n%%]*}; echo "$(cat "$FAKE/now") $n" >>"$FAKE/asked-$3"; "$FAKE/react" "$3" "$n"
-    elif [[ "$4" == /exit && -f "$FAKE/claude-$3" ]]; then
-      . "$FAKE/lib.sh"; fake_exit "$3"; ! life "$3" exit-fails
-    fi ;;
-  "agent rename") [[ "$4" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || { echo 'fake herdr: invalid_agent_name' >&2; exit 1; } ;;
-  "agent read") # agent read PANE --source visible [--format ansi]
-    s=$(cat "$FAKE/screen-$3" 2>/dev/null || echo '❯ ')
-    if [[ "$*" == *"--format ansi"* ]]; then printf '%s\n' "$s"; else printf '%s\n' "$s" | sed $'s/\e\\[[0-9;:]*m//g'; fi ;;
-  "pane get") printf '{"result":{"pane":{"scroll":{"offset_from_bottom":%s}}}}\n' "$(cat "$FAKE/scroll-$3" 2>/dev/null || echo 0)" ;;
-esac
-EOF
 cat >"$FAKE/bin/hc" <<'EOF'
 #!/bin/bash
 # fake hc: calls logged to $FAKE/hc-calls, the HC_TERMINAL_ID it was given to $FAKE/hc-env; no $FAKE/terms means no server
@@ -164,7 +132,24 @@ case "$1" in
   run) # run --bg --no-parent --name NAME --cwd DIR -- PROGRAM...: hc starts PROGRAM itself, here it is only recorded
     [[ ! -f "$FAKE/fail-launch" ]] || exit 1
     echo "$5 ${*:9}" >>"$FAKE/ran"; echo "{\"address\":\"$5\"}" ;;
+  send) # send T TEXT: the fake Claude in T reads it, or after /exit the shell in T runs it
+    echo '{"ok":true}' # a reply on stdout, which must not reach the log
+    if [[ "$3" == '[kit-update restart '* ]]; then
+      printf '%s' "$3" >"$FAKE/prompted-$2"
+      n=${3#\[kit-update restart }; n=${n%%]*}; echo "$(cat "$FAKE/now") $n" >>"$FAKE/asked-$2"; "$FAKE/react" "$2" "$n"
+    elif [[ -f "$FAKE/claude-$2" ]]; then
+      . "$FAKE/lib.sh"
+      if [[ "$3" == /exit ]]; then fake_exit "$2"; ! life "$2" exit-fails
+      else life "$2" slow-run && { touch "$FAKE/running"; sleep 1; }; fake_run "$2" "$3"; fi
+    fi ;;
 esac
+EOF
+cat >"$FAKE/bin/screen" <<'EOF'
+#!/bin/bash
+# fake hc-screen.pl: terminal $1's screen with its escape codes, from $FAKE/screen-<t> (default: an empty ❯ prompt);
+# with $FAKE/noscreen-<t>, unreadable: exit 1, nothing printed
+[[ -f "$FAKE/noscreen-$1" ]] && exit 1
+cat "$FAKE/screen-$1" 2>/dev/null || echo '❯ '
 EOF
 cat >"$FAKE/bin/pgrep" <<'EOF'
 #!/bin/bash
@@ -215,9 +200,9 @@ echo "$new" >"$FAKE/claude-$pane"
 life "$pane" dialog || fake_session "$new" "S$new" "$2" idle "$PWD"
 EOF
 chmod +x "$FAKE"/bin/* "$FAKE/react" "$FAKE/cbin/claude" "$FAKE/cbin/hc"
-unset HERDR_ENV HERDR_PANE_ID HC_TERMINAL_ID TMUX TMUX_PANE # the multiplexer this test runs in must not leak into the runs below
+unset HC_TERMINAL_ID TMUX TMUX_PANE # the multiplexer this test runs in must not leak into the runs below
 export FAKE CLAUDE_CONFIG_DIR="$FAKE/cfg" PATH="$FAKE/cbin:$PATH" \
-  KIT_UPDATE_TMUX_BIN="$FAKE/bin/tmux" KIT_UPDATE_HC_BIN="$FAKE/bin/hc" KIT_UPDATE_HERDR_BIN="$FAKE/bin/herdr" \
+  KIT_UPDATE_TMUX_BIN="$FAKE/bin/tmux" KIT_UPDATE_HC_BIN="$FAKE/bin/hc" KIT_UPDATE_SCREEN_BIN="$FAKE/bin/screen" \
   KIT_UPDATE_PGREP_BIN="$FAKE/bin/pgrep" KIT_UPDATE_PS_BIN="$FAKE/bin/ps" KIT_UPDATE_CLOCK_BIN="$FAKE/bin/clock" KIT_UPDATE_SLEEP_BIN="$FAKE/bin/sleep"
 
 fails=0
@@ -245,7 +230,7 @@ ku_paths
 # --- restart-lib: paths, clock, log
 [[ "$LOG $LOCK $HANDOFFS" == "$FAKE/cfg/kit-update/restart.log $FAKE/cfg/kit-update/restart.lock $FAKE/cfg/kit-update/handoffs" ]]
 check "ku_paths: restart's files live under CLAUDE_CONFIG_DIR/kit-update" $?
-[[ "$TMUX_BIN $HERDR_BIN $PS_BIN" == "$FAKE/bin/tmux $FAKE/bin/herdr $FAKE/bin/ps" ]]; check "ku_paths: test overrides for the binaries" $?
+[[ "$TMUX_BIN $PS_BIN" == "$FAKE/bin/tmux $FAKE/bin/ps" ]]; check "ku_paths: test overrides for the binaries" $?
 [[ ! -e "$KU_DIR" ]]; check "sourcing and ku_paths create nothing" $?
 ku_nap 30; [[ "$(ku_now)" == 1000030 ]]; check "fake sleep moves the fake clock" $?
 
@@ -421,12 +406,12 @@ for a in prompt queued assistant; do
 done
 
 # --- restart-all.sh: snapshot, state file, lock and worker launch
-# The worker is never run: the fake pane run and send-keys only record its command line in $FAKE/ran.
+# The worker is never run: the fake hc run and tmux send-keys only record its command line in $FAKE/ran.
 reset_world() {
-  rm -rf "${CFG:?}/sessions" "${CFG:?}/projects" "${KU_DIR:?}" "${FAKE:?}"/{panes,agents,tmux-calls,herdr-calls,ran,tmux-sessions,fail-launch,hook-list-panes,hook-ps} \
+  rm -rf "${CFG:?}/sessions" "${CFG:?}/projects" "${KU_DIR:?}" "${FAKE:?}"/{panes,tmux-calls,ran,tmux-sessions,fail-launch,hook-list-panes,hook-ps} \
     "${FAKE:?}"/{terms,terms.new,hget-*,hc-calls,hc-env,hook-hc-*} \
-    "${FAKE:?}"/{warp,hook-sleep,screen-*,mode-*,scroll-*,claude-*,scenario-*,asked-*,prompted-*,pasted-*} \
-    "${FAKE:?}"/{life-*,shell-*,hpanes,dead-*,roe-*,panepid-*,refuse-*,argv-*,cwd-*,hook-set-option,running,sleeping,fifo,pwned*,x,pane-list,agents-ok,armed}
+    "${FAKE:?}"/{warp,hook-sleep,screen-*,noscreen-*,mode-*,claude-*,scenario-*,asked-*,prompted-*,pasted-*} \
+    "${FAKE:?}"/{life-*,shell-*,dead-*,roe-*,panepid-*,refuse-*,argv-*,cwd-*,hook-set-option,running,sleeping,fifo,pwned*,x,armed}
   mkdir -p "$CFG/sessions"
   : >"$FAKE/procs"
   touch "$FAKE/core-up"
@@ -435,10 +420,6 @@ ra() { /bin/bash "$here/restart-all.sh" 2>&1; }
 ra_as() { # PPID: run restart-all.sh as a process the fake ps knows, whose parent is PPID (exec keeps the pid)
   sh -c 'printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" $$ "$1" $$ $$ "??" "Thu Oct  2 07:43:00 2026" "bash restart-all.sh" >>"$FAKE/procs"
     exec /bin/bash "$2"' sh "$1" "$here/restart-all.sh" 2>&1
-}
-agent() { # PANE NAME|null WORKSPACE SID [STATUS]: one entry of herdr agent list (idle unless STATUS)
-  printf '{"pane_id":"%s","name":%s,"agent":"claude","agent_status":"%s","cwd":"/x","workspace_id":"%s","agent_session":{"value":"%s"}}' \
-    "$1" "$2" "${5:-idle}" "$3" "$4"
 }
 term() { # ADDR WHERE SHELL_PID FG_PID|null [AGENT] [STATE] [CWD] [FG_NAME]: a terminal, in hc ls and hc get (not a remote one's)
   local a=$1 w=$2 sp=$3 fp=$4 agent=${5:-claude-code} state=${6:-live} cwd=${7:-/x/$1} fn=${8:-2.1.309}
@@ -730,15 +711,19 @@ activity() { # PANE: someone types into its session, and Claude answers
 }
 answer() { "$FAKE/react" "$1" "$(awk 'END { print $2 }' "$FAKE/asked-$1")"; } # PANE: a late answer to its last request
 life() { grep -qx "$2" "$FAKE/life-$1" 2>/dev/null; } # PANE WORD: its Claude lives that way ($FAKE/life-<pane>)
-fake_exit() { # PANE: its Claude exits (unless no-exit): process and session file go, herdr lists no agent there, and
-  # its shell is in front again (vim: something else is), or the pane dies (Claude was its process, or its shell sh -c)
+hget() { # T STATE [STATUS]: what the fake hc get T --json prints for terminal T (no STATUS: status null)
+  jq -nc --arg t "$1" --arg s "$2" --arg st "${3:-}" \
+    '{address: $t, state: $s, status: (if $st == "" then null else {state: $st, app: "claude-code", msg: null} end)}' >"$FAKE/hget-$1"
+}
+fake_exit() { # PANE: its Claude exits (unless no-exit): process and session file go, an hc terminal stays live with no
+  # status, and its shell is in front again (vim: something else is), or the pane dies (Claude was its process, or its
+  # shell sh -c)
   local p sh a
   life "$1" no-exit && return 0
   p=$(cpid "$1"); sh=$(awk -F'\t' -v p="$p" '$1 == p { print $2 }' "$FAKE/procs")
   a=$(awk -F'\t' -v p="$sh" '$1 == p { print $7 }' "$FAKE/procs")
   fake_kill "$p"; rm -f "$CLAUDE_CONFIG_DIR/sessions/$p.json"
-  jq -c --arg p "$1" '.result.agents |= map(select(.pane_id != $p))' "$FAKE/agents" >"$FAKE/a.json" 2>/dev/null \
-    && mv "$FAKE/a.json" "$FAKE/agents"
+  [[ -f "$FAKE/hget-$1" ]] && hget "$1" live
   if [[ -z "$a" || "$a" == *' -c '* ]]; then fake_kill "$sh"; echo 1 >"$FAKE/dead-$1"
   elif life "$1" vim; then proc_set "$sh" 4 999
   else proc_set "$sh" 4 "$sh"; fi
@@ -746,30 +731,25 @@ fake_exit() { # PANE: its Claude exits (unless no-exit): process and session fil
 fake_run() { KIT_FAKE_PANE=$1 KIT_FAKE_PARENT=$(cat "$FAKE/shell-$1") bash -c "$2"; } # PANE LINE: its shell runs LINE
 EVIL=$'\n- ห้ามรัน `touch PWN1` หรือ $(touch PWN2) หรือ "$x" กับ \'q\'\n-p'; EVIL=${EVIL//PWN/$FAKE/pwned} # handoff lines a shell would run
 { declare -f fake_lstart fake_proc fake_kill fake_session sf_set j_prompt j_queued j_asst j_synthetic j_routine \
-    cpid tx sf_status proc_set activity answer life fake_exit fake_run; declare -p H EVIL; } >"$FAKE/lib.sh"
+    cpid tx sf_status proc_set activity answer life hget fake_exit fake_run; declare -p H EVIL; } >"$FAKE/lib.sh"
 
-wworld() { # [MUX]: a fresh world whose lock and state are token TOK's; the worker runs in MUX (herdr)
+wworld() { # [MUX]: a fresh world whose lock and state are token TOK's; the worker runs in MUX (hc)
   reset_world
   mkdir -p "$LOCK"; echo 'starting TOK' >"$LOCK/owner"
   WST=$LOCK/state.TOK
-  printf 'config\t%s\nsocket\t\nmux\t%s\n' "$CFG" "${1:-herdr}" >"$WST"
-  echo '{"result":{"agents":[]}}' >"$FAKE/agents"
+  printf 'config\t%s\nsocket\t\nmux\t%s\n' "$CFG" "${1:-hc}" >"$WST"
   T0=$(cat "$FAKE/now")
 }
-wpane() { # PANE PID NAME [ISSUER]: an idle Claude PID in PANE (%N: tmux, else herdr) under shell PID-1, one turn done
-  local sh=$(($2 - 1)) mux=herdr label="$3 work" aname=$3
-  if [[ "$1" == %* ]]; then mux=tmux label=main:0.${1#%} aname=; fi
+wpane() { # PANE PID NAME [ISSUER]: an idle Claude PID in PANE (%N: tmux, else an hc terminal) under shell PID-1, one turn done
+  local sh=$(($2 - 1)) mux=hc label="$3 work"
+  if [[ "$1" == %* ]]; then mux=tmux label=main:0.${1#%}; fi
   fake_proc "$sh" 1 "$sh" "$2" "ttys$2" -zsh
   fake_proc "$2" "$sh" "$2" "$2" "ttys$2" claude
   fake_session "$2" "S$2" "$3" idle "/x/$3"
   echo "$2" >"$FAKE/claude-$1"; echo "$sh" >"$FAKE/shell-$1"
   { j_prompt 'งานเดิม'; j_asst "o$2" end_turn text 'เสร็จแล้ว'; j_routine; } >"$(tx "$2")"
-  if [[ $mux == herdr ]]; then
-    jq -c --argjson a "$(agent "$1" "\"$3\"" w1 "S$2")" '.result.agents += [$a]' "$FAKE/agents" >"$FAKE/a.json" \
-      && mv "$FAKE/a.json" "$FAKE/agents"
-    echo "$1" >>"$FAKE/hpanes"
-  fi
-  printf '%s\t' pane "$mux" "$1" "$label" "$2" "$(fake_lstart "$2")" "ttys$2" "$sh" "S$2" "$3" 2.1.309 "/x/$3" "${4:-0}" "$aname" >>"$WST"
+  [[ $mux == hc ]] && hget "$1" live done
+  printf '%s\t' pane "$mux" "$1" "$label" "$2" "$(fake_lstart "$2")" "ttys$2" "$sh" "S$2" "$3" 2.1.309 "/x/$3" "${4:-0}" '' >>"$WST"
   echo claude >>"$WST"
 }
 st_set() { # PID COLUMN VALUE: change one column of the state row of Claude PID
@@ -785,16 +765,16 @@ handoff() { ls "$HANDOFFS"/*-"$1".md 2>/dev/null; }                             
 skipped() { grep -qF -- "    - $1 — $2" "$FAKE/wout"; }                                 # SHOWN REASON: a Summary line
 restarted() { grep -qxF -- "    - $1" "$FAKE/wout"; }                                    # SHOWN [— NOTE]: a Summary line
 
-wworld; wpane w1:p1 101 alpha
+wworld; wpane t1 101 alpha
 size=$(($(wc -c <"$(tx 101)")))
 rw
-n=$(awk '{ print $2 }' "$FAKE/asked-w1:p1" 2>/dev/null)
-f=$HANDOFFS/$(date -r $((T0 + 10)) +%Y%m%d-%H%M%S)-alpha-w1_p1.md
-[[ "$(asks w1:p1)" == 1 && "$n" =~ ^[0-9a-f]{16}$ && "$(cat "$FAKE/prompted-w1:p1")" == "[kit-update restart $n]$REQ" ]] \
-  && grep -qxF "agent prompt w1:p1 [kit-update restart $n]$REQ" "$FAKE/herdr-calls" && ! grep -q -- --wait "$FAKE/herdr-calls" \
+n=$(awk '{ print $2 }' "$FAKE/asked-t1" 2>/dev/null)
+f=$HANDOFFS/$(date -r $((T0 + 10)) +%Y%m%d-%H%M%S)-alpha-t1.md
+[[ "$(asks t1)" == 1 && "$n" =~ ^[0-9a-f]{16}$ && "$(cat "$FAKE/prompted-t1")" == "[kit-update restart $n]$REQ" ]] \
+  && grep -qxF "send t1 [kit-update restart $n]$REQ" "$FAKE/hc-calls" \
   && [[ "$(cat "$f" 2>/dev/null)" == "$H" ]] && grep -q "request $n, its transcript read from byte $size)" "$LOG"
-check "idle herdr pane: request sent, handoff file written" $?
-grep -qx 'Summary  restarted: 1 · skipped: 0' "$FAKE/wout" && restarted 'alpha (herdr w1:p1)' \
+check "idle hc terminal: request sent, handoff file written" $?
+grep -qx 'Summary  restarted: 1 · skipped: 0' "$FAKE/wout" && restarted 'alpha (hc t1)' \
   && grep -qx 'Summary  restarted: 1 · skipped: 0' "$LOG" && [[ ! -e "$LOCK" ]]
 check "Summary in the pane and the log, lock released at the end" $?
 
@@ -805,21 +785,21 @@ grep -qxF "load-buffer -b kit-update-$n $LOCK/request-$n.txt ; paste-buffer -b k
   "$FAKE/tmux-calls" && cmp -s "$FAKE/pasted-%1" <(printf '%s' "[kit-update restart $n]$REQ") && [[ -n "$(handoff alpha-_1)" ]]
 check "idle tmux pane: named buffer, paste -p, Enter in the same call" $?
 
-# Once a turn ends, Claude Code suggests a next prompt: dim text after ❯ (herdr --format ansi and tmux capture-pane -e
-# bytes below). It isn't typed: the pane stays sendable, so its answer is read and it goes on to /exit.
-printf '⏺ done\r\n❯\xc2\xa0\e[0m\e[2mคำรหัสของ session นี้คืออะไร\e[0m\r\n\e[0m\r\n' >"$FAKE/sugg-herdr"
+# Once a turn ends, Claude Code suggests a next prompt: dim text after ❯ (hc-screen.pl and tmux capture-pane -e bytes
+# below). It isn't typed: the pane stays sendable, so its answer is read and it goes on to /exit.
+printf '⏺ done\n❯\xc2\xa0\e[0m\e[2mคำรหัสของ session นี้คืออะไร\e[0m\n\e[0m\n' >"$FAKE/sugg-hc"
 printf '⏺ done\n\e[39m❯\xc2\xa0\e[2mคำรหัสของ session นี้คืออะไร\e[0m\n' >"$FAKE/sugg-tmux"
-wworld; echo 600 >"$FAKE/warp"; wpane w1:p1 101 alpha; wpane %2 111 beta
-hook 'cp "$FAKE/sugg-herdr" "$FAKE/screen-w1:p1"; cp "$FAKE/sugg-tmux" "$FAKE/screen-%2"' # from the first nap: after the request
+wworld; echo 600 >"$FAKE/warp"; wpane t1 101 alpha; wpane %2 111 beta
+hook 'cp "$FAKE/sugg-hc" "$FAKE/screen-t1"; cp "$FAKE/sugg-tmux" "$FAKE/screen-%2"' # from the first nap: after the request
 LC_ALL=C rw # as in a tmux server started without LANG: the no-break space after ❯ must still read as a space
-[[ "$(asks w1:p1)" == 1 && -n "$(handoff alpha-w1_p1)" ]] && restarted 'alpha (herdr w1:p1)'
-check "herdr: dim suggestion in the prompt after the answer: handoff read, restarted" $?
+[[ "$(asks t1)" == 1 && -n "$(handoff alpha-t1)" ]] && restarted 'alpha (hc t1)'
+check "hc: dim suggestion in the prompt after the answer: handoff read, restarted" $?
 [[ "$(asks %2)" == 1 && -n "$(handoff beta-_2)" ]] && restarted 'beta (tmux main:0.2)'
 check "tmux: dim suggestion in the prompt after the answer: handoff read, restarted" $?
-wworld; echo 600 >"$FAKE/warp"; wpane w1:p1 101 alpha; wpane %2 111 beta
-printf '❯\xc2\xa0\e[38;5;2mแก้ต่อ\e[39m\r\n' >"$FAKE/screen-w1:p1"; printf '\e[39m❯\xc2\xa0\e[38;2;2;90;200mแก้ต่อ\e[39m\n' >"$FAKE/screen-%2"
+wworld; echo 600 >"$FAKE/warp"; wpane t1 101 alpha; wpane %2 111 beta
+printf '❯\xc2\xa0\e[38;5;2mแก้ต่อ\e[39m\n' >"$FAKE/screen-t1"; printf '\e[39m❯\xc2\xa0\e[38;2;2;90;200mแก้ต่อ\e[39m\n' >"$FAKE/screen-%2"
 LC_ALL=C rw
-[[ "$(asks w1:p1) $(asks %2)" == '0 0' ]] && skipped 'alpha (herdr w1:p1)' 'prompt not empty or not found, gave up after 4 h' \
+[[ "$(asks t1) $(asks %2)" == '0 0' ]] && skipped 'alpha (hc t1)' 'prompt not empty or not found, gave up after 4 h' \
   && skipped 'beta (tmux main:0.2)' 'prompt not empty or not found, gave up after 4 h'
 check "typed (not dim, colour 2) text in the prompt: never asked" $?
 
@@ -829,171 +809,176 @@ held() { # LABEL PANE WHY HOOK: PANE takes no keys (the log says "waiting: WHY")
   [[ "$(ask_at "$2")" == $((T0 + 60)) && -n "$(ls "$HANDOFFS" 2>/dev/null)" ]] && grep -qF "waiting: $3" "$LOG"
   check "$1" $?
 }
-wworld; wpane w1:p1 101 alpha; sf_set 101 '.status = "busy"'
-held "busy then idle: asked only after idle" w1:p1 busy 'sf_status 101 idle'
-wworld; wpane w1:p1 101 alpha
+wworld; wpane t1 101 alpha; sf_set 101 '.status = "busy"'
+held "busy then idle: asked only after idle" t1 busy 'sf_status 101 idle'
+wworld; wpane t1 101 alpha
 fake_proc 150 101 150 101 ttys101 "/bin/zsh -c source $CFG/shell-snapshots/snapshot-zsh-1-x.sh && eval 'sleep 300'"
-held "background shell child: waits without asking" w1:p1 'background process still running' 'fake_kill 150'
-wworld; wpane w1:p1 101 alpha
-proc_set 101 4 100; printf '~/x/alpha\n❯ \n' >"$FAKE/screen-w1:p1" # Ctrl+Z: its shell is in front, and its prompt starts with ❯
-held "suspended (pgid != tpgid) with ❯ screen: no keys" w1:p1 'not in front' 'proc_set 101 4 101'
+held "background shell child: waits without asking" t1 'background process still running' 'fake_kill 150'
+wworld; wpane t1 101 alpha
+proc_set 101 4 100; printf '~/x/alpha\n❯ \n' >"$FAKE/screen-t1" # Ctrl+Z: its shell is in front, and its prompt starts with ❯
+held "suspended (pgid != tpgid) with ❯ screen: no keys" t1 'not in front' 'proc_set 101 4 101'
 wworld tmux; wpane %1 101 alpha; echo 1 >"$FAKE/mode-%1"
 held "tmux copy mode: no keys until it leaves, then asked" %1 'in copy mode' 'echo 0 >"$FAKE/mode-%1"'
-wworld; wpane w1:p1 101 alpha; echo 3 >"$FAKE/scroll-w1:p1"
-held "herdr pane scrolled up: no keys until back at the bottom" w1:p1 'scrolled up' 'echo 0 >"$FAKE/scroll-w1:p1"'
-wworld; wpane w1:p1 101 alpha; sf_set 101 '.status = "shell"'
-held "status shell (background shell): waits without asking" w1:p1 'background process still running' 'sf_status 101 idle'
+wworld; wpane t1 101 alpha; touch "$FAKE/noscreen-t1"
+held "screen unreadable: no keys until readable" t1 'screen unreadable' 'rm "$FAKE/noscreen-t1"'
+wworld; wpane t1 101 alpha; sf_set 101 '.status = "shell"'
+held "status shell (background shell): waits without asking" t1 'background process still running' 'sf_status 101 idle'
 
-wworld; wpane w1:p1 101 alpha; echo 600 >"$FAKE/warp"
-jq '.result.agents[0].agent_status = "blocked"' "$FAKE/agents" >"$FAKE/a.json" && mv "$FAKE/a.json" "$FAKE/agents"
+wworld; wpane t1 101 alpha; echo 600 >"$FAKE/warp"; hget t1 live blocked
 rw
-[[ "$(asks w1:p1)" == 0 ]] && ! grep -q 'agent prompt' "$FAKE/herdr-calls" && skipped 'alpha (herdr w1:p1)' 'waiting on a question' \
+[[ "$(asks t1)" == 0 ]] && ! grep -q '^send ' "$FAKE/hc-calls" && skipped 'alpha (hc t1)' 'waiting on a question' \
   && grep -q '4 h' "$FAKE/wout" && (($(cat "$FAKE/now") - T0 >= 14400))
 check "blocked until the cap: skipped, no keys" $?
+wworld; wpane t1 101 alpha; hget t1 live error # a turn that ended in an error: the screen decides
+rw
+[[ "$(asks t1)" == 1 ]] && restarted 'alpha (hc t1)'; check "status error with an idle screen: asked" $?
 
-wworld; wpane w1:p1 101 alpha; echo 'starting OTHER' >"$LOCK/owner"
+wworld; wpane t1 101 alpha; echo 'starting OTHER' >"$LOCK/owner"
 rw; rc=$?
-[[ $rc == 0 && ! -e "$FAKE/herdr-calls" && ! -e "$FAKE/tmux-calls" && "$(cat "$LOCK/owner")" == 'starting OTHER' && ! -e "$LOG" ]]
+[[ $rc == 0 && ! -e "$FAKE/hc-calls" && ! -e "$FAKE/tmux-calls" && "$(cat "$LOCK/owner")" == 'starting OTHER' && ! -e "$LOG" ]]
 check "token mismatch: worker exits without touching panes" $?
 
-wworld; wpane w1:p1 101 alpha
+wworld; wpane t1 101 alpha
 hook "cp '$LOCK/owner' '$FAKE/owner-seen'"
-HERDR_PANE_ID=w9:p1 KIT_FAKE_REAL_SLEEP=0 sh -c 'echo $$ >"$FAKE/wpid"
+HC_TERMINAL_ID=t9 KIT_FAKE_REAL_SLEEP=0 sh -c 'echo $$ >"$FAKE/wpid"
   printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" $$ 1 $$ $$ "??" "Thu Oct  2 07:43:00 2026" "bash restart-worker.sh state.TOK" >>"$FAKE/procs"
   exec /bin/bash "$1" "$2"' sh "$here/restart-worker.sh" "$WST" >"$FAKE/wout" 2>&1
-[[ "$(cat "$FAKE/owner-seen" 2>/dev/null)" == "TOK $(cat "$FAKE/wpid") w9:p1"$'\ncmd bash restart-worker.sh state.TOK' ]]
+[[ "$(cat "$FAKE/owner-seen" 2>/dev/null)" == "TOK $(cat "$FAKE/wpid") t9"$'\ncmd bash restart-worker.sh state.TOK' ]]
 check "owner: token, pid, pane and command line of the worker" $?
+restarted 'alpha (hc t1)' && grep -qx 'send t1 /exit' "$FAKE/hc-calls" && [[ -s "$FAKE/hc-env" ]] && ! grep -qvx unset "$FAKE/hc-env"
+check "worker: hc never sees HC_TERMINAL_ID" $?
 
-wworld; wpane w1:p1 101 alpha; sf_set 101 '.status = "busy"'
+wworld; wpane t1 101 alpha; sf_set 101 '.status = "busy"'
 hook "((now == T0 + 20)) && echo 'starting OTHER' >'$LOCK/owner'" '((now == T0 + 40)) && sf_status 101 idle'
 rw # it must stop at T0+20, on the tick itself, not at T0+40 when it would type
-[[ "$(asks w1:p1)" == 0 && "$(cat "$LOCK/owner" 2>/dev/null)" == 'starting OTHER' && "$(cat "$FAKE/now")" == $((T0 + 20)) ]] \
+[[ "$(asks t1)" == 0 && "$(cat "$LOCK/owner" 2>/dev/null)" == 'starting OTHER' && "$(cat "$FAKE/now")" == $((T0 + 20)) ]] \
   && grep -q 'lost the lock' "$LOG"
 check "lost the lock mid-run: stops without keys" $?
 
 wworld
-wpane w1:p1 101 alpha; proc_set 101 6 'Fri Oct  3 01:02:03 2026' # pid 101 now belongs to another process
-wpane w1:p2 111 beta; proc_set 111 5 ttys999
-wpane w1:p3 121 gamma
-jq '.result.agents |= map(select(.pane_id != "w1:p3"))' "$FAKE/agents" >"$FAKE/a.json" && mv "$FAKE/a.json" "$FAKE/agents"
+wpane t1 101 alpha; proc_set 101 6 'Fri Oct  3 01:02:03 2026' # pid 101 now belongs to another process
+wpane t2 111 beta; proc_set 111 5 ttys999
+wpane t3 121 gamma; rm "$FAKE/hget-t3"
+wpane t4 131 delta; hget t4 finished
 rw
-[[ "$(asks w1:p1)" == 0 ]] && skipped 'alpha (herdr w1:p1)' gone; check "pid reused (procStart differs): gone" $?
-[[ "$(asks w1:p2)" == 0 ]] && skipped 'beta (herdr w1:p2)' gone; check "tty differs: gone" $?
-[[ "$(asks w1:p3)" == 0 ]] && skipped 'gamma (herdr w1:p3)' gone; check "herdr pane vanished: gone" $?
+[[ "$(asks t1)" == 0 ]] && skipped 'alpha (hc t1)' gone; check "pid reused (procStart differs): gone" $?
+[[ "$(asks t2)" == 0 ]] && skipped 'beta (hc t2)' gone; check "tty differs: gone" $?
+[[ "$(asks t3)" == 0 ]] && skipped 'gamma (hc t3)' gone; check "hc terminal gone (not_found): gone" $?
+[[ "$(asks t4)" == 0 ]] && skipped 'delta (hc t4)' gone; check "hc terminal finished: gone" $?
 
 wworld; echo 150 >"$FAKE/warp"
-wpane w1:p1 101 alpha; scen w1:p1 not-ready handoff # 5 min after the request, only its statusUpdatedAt moves
-wpane w1:p2 111 beta; scen w1:p2 not-ready handoff  # at 40 min, only its transcript moves
-wpane w1:p3 121 gamma; scen w1:p3 not-ready handoff # /clear after its NOT-READY
-wpane w1:p4 131 delta; scen w1:p4 not-ready         # only another session in its folder moves
+wpane t1 101 alpha; scen t1 not-ready handoff # 5 min after the request, only its statusUpdatedAt moves
+wpane t2 111 beta; scen t2 not-ready handoff  # at 40 min, only its transcript moves
+wpane t3 121 gamma; scen t3 not-ready handoff # /clear after its NOT-READY
+wpane t4 131 delta; scen t4 not-ready         # only another session in its folder moves
 hook '((now == T0 + 300)) && sf_status 101 idle' '((now == T0 + 2400)) && j_prompt "ต่อ" >>"$(tx 111)"' \
   '((now == T0 + 450)) && sf_set 121 ".sessionId = \"S121b\""' \
   '((now == T0 + 450)) && j_prompt "อีก session" >>"$CLAUDE_CONFIG_DIR/projects/-x-delta/S999.jsonl"' \
   '((now == T0 + 3000)) && fake_kill 131'
 rw
-a1=$(ask_at w1:p1) a2=$(ask_at w1:p1 2) b2=$(ask_at w1:p2 2) c1=$(ask_at w1:p3) c2=$(ask_at w1:p3 2)
-((a1 == T0 && a2 - a1 == 1800 && b2 >= T0 + 2400)) && [[ -n "$(handoff alpha-w1_p1)" && -n "$(handoff beta-w1_p2)" ]]
+a1=$(ask_at t1) a2=$(ask_at t1 2) b2=$(ask_at t2 2) c1=$(ask_at t3) c2=$(ask_at t3 2)
+((a1 == T0 && a2 - a1 == 1800 && b2 >= T0 + 2400)) && [[ -n "$(handoff alpha-t1)" && -n "$(handoff beta-t2)" ]]
 check "not-ready: no re-ask before activity and 30 min" $?
-grep -qF 'alpha (herdr w1:p1) — NOT-READY: background Bash ยังรันอยู่' "$LOG"; check "not-ready: reason is in the log" $?
-((c2 - c1 == 1800)) && [[ -n "$(handoff gamma-w1_p3)" ]]; check "not-ready then /clear: new sessionId counts as activity" $?
-[[ "$(asks w1:p4)" == 1 ]] && skipped 'delta (herdr w1:p4)' gone
+grep -qF 'alpha (hc t1) — NOT-READY: background Bash ยังรันอยู่' "$LOG"; check "not-ready: reason is in the log" $?
+((c2 - c1 == 1800)) && [[ -n "$(handoff gamma-t3)" ]]; check "not-ready then /clear: new sessionId counts as activity" $?
+[[ "$(asks t4)" == 1 ]] && skipped 'delta (hc t4)' gone
 check "activity of another session in the same folder does not count" $?
 
-wworld; wpane w1:p1 101 alpha; rm -f "$(tx 101)"
+wworld; wpane t1 101 alpha; rm -f "$(tx 101)"
 rw
-[[ "$(asks w1:p1)" == 1 && -n "$(handoff alpha-w1_p1)" ]] && grep -q 'transcript read from byte 0)' "$LOG"
+[[ "$(asks t1)" == 1 && -n "$(handoff alpha-t1)" ]] && grep -q 'transcript read from byte 0)' "$LOG"
 check "new session without a transcript yet: offset 0, answer read" $?
 
-wworld; wpane w1:p1 101 alpha; mkdir -p "$HANDOFFS"; chmod 500 "$HANDOFFS"
+wworld; wpane t1 101 alpha; mkdir -p "$HANDOFFS"; chmod 500 "$HANDOFFS"
 rw; chmod 700 "$HANDOFFS"
-skipped 'alpha (herdr w1:p1)' 'could not write its handoff' && ! grep -q '/exit' "$FAKE/herdr-calls"
+skipped 'alpha (hc t1)' 'could not write its handoff' && ! grep -q '/exit' "$FAKE/hc-calls"
 check "handoff file not written: skipped, never ready" $?
 
 wworld; echo 180 >"$FAKE/warp"
-wpane w1:p1 101 alpha; scen w1:p1 not-ready
-hook 'activity w1:p1' '((now >= T0 + 7200)) && fake_kill 101'
+wpane t1 101 alpha; scen t1 not-ready
+hook 'activity t1' '((now >= T0 + 7200)) && fake_kill 101'
 rw
-awk 'NR > 1 && $1 - p < 1800 { bad = 1 } { p = $1 } END { exit bad || NR < 4 }' "$FAKE/asked-w1:p1" 2>/dev/null
+awk 'NR > 1 && $1 - p < 1800 { bad = 1 } { p = $1 } END { exit bad || NR < 4 }' "$FAKE/asked-t1" 2>/dev/null
 check "/loop activity every 3 min: asked at most every 30 min" $?
 
 wworld; echo 60 >"$FAKE/warp"
-wpane w1:p1 101 alpha; scen w1:p1 queued-after handoff
+wpane t1 101 alpha; scen t1 queued-after handoff
 rw
-s1=$(ask_at w1:p1) s2=$(ask_at w1:p1 2)
-((s2 - s1 == 1800)) && [[ -n "$(handoff alpha-w1_p1)" ]]; check "stale (queued prompt): re-asked after 30 min without activity" $?
+s1=$(ask_at t1) s2=$(ask_at t1 2)
+((s2 - s1 == 1800)) && [[ -n "$(handoff alpha-t1)" ]]; check "stale (queued prompt): re-asked after 30 min without activity" $?
 
 wworld; echo 60 >"$FAKE/warp"
-wpane w1:p1 101 alpha; scen w1:p1 tool api-error max-tokens
-wpane w1:p2 111 beta; scen w1:p2 no-heading
+wpane t1 101 alpha; scen t1 tool api-error max-tokens
+wpane t2 111 beta; scen t2 no-heading
 rw
-awk 'NR > 1 && $1 - p < 300 { bad = 1 } { p = $1 } END { exit bad || NR != 3 }' "$FAKE/asked-w1:p1" 2>/dev/null \
-  && [[ "$(asks w1:p2)" == 3 ]] && skipped 'alpha (herdr w1:p1)' 'no valid handoff' && skipped 'beta (herdr w1:p2)' 'no valid handoff' \
+awk 'NR > 1 && $1 - p < 300 { bad = 1 } { p = $1 } END { exit bad || NR != 3 }' "$FAKE/asked-t1" 2>/dev/null \
+  && [[ "$(asks t2)" == 3 ]] && skipped 'alpha (hc t1)' 'no valid handoff' && skipped 'beta (hc t2)' 'no valid handoff' \
   && grep -q 'tool call' "$LOG" && grep -q 'api error' "$LOG" && grep -q 'stop_reason max_tokens' "$LOG" \
-  && grep -q 'missing headings' "$LOG" && ! grep -q /exit "$FAKE/herdr-calls" && [[ -z "$(ls "$HANDOFFS" 2>/dev/null)" ]]
+  && grep -q 'missing headings' "$LOG" && ! grep -q /exit "$FAKE/hc-calls" && [[ -z "$(ls "$HANDOFFS" 2>/dev/null)" ]]
 check "invalid x3: skipped no valid handoff, 5 min apart, never /exit" $?
 
 wworld
-wpane w1:p1 101 alpha; scen w1:p1 silent
-wpane w1:p2 111 beta; sf_set 111 '.status = "busy"' # keeps the worker going after alpha is given up
+wpane t1 101 alpha; scen t1 silent
+wpane t2 111 beta; sf_set 111 '.status = "busy"' # keeps the worker going after alpha is given up
 hook '((now == T0 + 120)) && sf_status 111 idle'
 rw
-[[ "$(asks w1:p1)" == 1 && "$(grep -c '^agent prompt w1:p1 ' "$FAKE/herdr-calls")" == 1 ]] \
-  && skipped 'alpha (herdr w1:p1)' 'request not submitted' \
+[[ "$(asks t1)" == 1 && "$(grep -c '^send t1 ' "$FAKE/hc-calls")" == 1 ]] \
+  && skipped 'alpha (hc t1)' 'request not submitted' \
   && awk '/alpha .*skipped: request not submitted/ { s = NR } /beta .*asked/ { b = NR } END { exit !(s && b && s < b) }' "$LOG"
 check "request not submitted: no nonce in 30s, then no more keys" $?
 
-wworld; wpane w1:p1 101 alpha; scen w1:p1 busy-silent handoff
-hook '((now == T0 + 60)) && answer w1:p1'
+wworld; wpane t1 101 alpha; scen t1 busy-silent handoff
+hook '((now == T0 + 60)) && answer t1'
 rw
-[[ "$(asks w1:p1)" == 1 && -n "$(handoff alpha-w1_p1)" ]] && ! grep -q 'not submitted' "$LOG"
+[[ "$(asks t1)" == 1 && -n "$(handoff alpha-t1)" ]] && ! grep -q 'not submitted' "$LOG"
 check "busy after send: keeps waiting past 30s" $?
 
-wworld; wpane w1:p1 101 alpha; scen w1:p1 busy-silent handoff
+wworld; wpane t1 101 alpha; scen t1 busy-silent handoff
 hook '((now == T0 + 20)) && sf_set 101 ".sessionId = \"S101b\" | .status = \"idle\""'
 rw
-[[ "$(asks w1:p1)" == 2 && "$(ask_at w1:p1 2)" == $((T0 + 30)) && -n "$(handoff alpha-w1_p1)" ]] && ! grep -q 'no valid handoff' "$LOG"
+[[ "$(asks t1)" == 2 && "$(ask_at t1 2)" == $((T0 + 30)) && -n "$(handoff alpha-t1)" ]] && ! grep -q 'no valid handoff' "$LOG"
 check "sessionId changes while asked: back to wait, not a failure" $?
 
 wworld
-wpane w1:p1 101 alpha; sf_set 101 '.status = "busy"' # waiting, so it holds no slot
-wpane w1:p2 111 beta; wpane w1:p3 121 gamma; wpane w1:p4 131 delta
+wpane t1 101 alpha; sf_set 101 '.status = "busy"' # waiting, so it holds no slot
+wpane t2 111 beta; wpane t3 121 gamma; wpane t4 131 delta
 hook '((now == T0 + 30)) && sf_status 101 idle'
 rw
-[[ "$(ask_at w1:p2) $(ask_at w1:p3) $(ask_at w1:p4) $(ask_at w1:p1)" == "$T0 $T0 $((T0 + 10)) $((T0 + 30))" ]]
+[[ "$(ask_at t2) $(ask_at t3) $(ask_at t4) $(ask_at t1)" == "$T0 $T0 $((T0 + 10)) $((T0 + 30))" ]]
 check "three idle panes: at most two asked at once" $?
 
-wworld; wpane w1:p1 101 alpha 1; wpane w1:p2 111 beta
+wworld; wpane t1 101 alpha 1; wpane t2 111 beta
 rw
-[[ "$(ask_at w1:p2) $(ask_at w1:p1)" == "$T0 $((T0 + 10))" && -n "$(handoff alpha-w1_p1)" ]]; check "issuer goes last" $?
+[[ "$(ask_at t2) $(ask_at t1)" == "$T0 $((T0 + 10))" && -n "$(handoff alpha-t1)" ]]; check "issuer goes last" $?
 
 wworld; echo 600 >"$FAKE/warp"
-wpane w1:p1 101 alpha; scen w1:p1 not-ready
-wpane w1:p2 111 beta; fake_proc 150 111 150 111 ttys111 "/bin/zsh -c source $CFG/shell-snapshots/snapshot-zsh-1-x.sh && eval 'npm run dev'"
-wpane w1:p3 121 gamma 1
+wpane t1 101 alpha; scen t1 not-ready
+wpane t2 111 beta; fake_proc 150 111 150 111 ttys111 "/bin/zsh -c source $CFG/shell-snapshots/snapshot-zsh-1-x.sh && eval 'npm run dev'"
+wpane t3 121 gamma 1
 rw
-[[ -n "$(handoff gamma-w1_p3)" ]] && skipped 'alpha (herdr w1:p1)' 'NOT-READY: background Bash'
+[[ -n "$(handoff gamma-t3)" ]] && skipped 'alpha (hc t1)' 'NOT-READY: background Bash'
 check "issuer still runs while another pane is NOT-READY forever" $?
-[[ -n "$(handoff gamma-w1_p3)" && "$(asks w1:p2)" == 0 ]] && skipped 'beta (herdr w1:p2)' 'background process still running'
+[[ -n "$(handoff gamma-t3)" && "$(asks t2)" == 0 ]] && skipped 'beta (hc t2)' 'background process still running'
 check "issuer still runs while another pane has a background shell forever" $?
 
 wworld
-wpane w1:p1 101 cee; sf_set 101 '.status = "busy"' # idle at T0+30, while both slots are still taken
-wpane w1:p2 111 ay; scen w1:p2 busy-silent handoff  # these two hold the slots until T0+30
-wpane w1:p3 121 bee; scen w1:p3 busy-silent handoff
-wpane w1:p4 131 me 1
-hook '((now == T0 + 30)) && { sf_status 101 idle; answer w1:p2; answer w1:p3; }'
+wpane t1 101 cee; sf_set 101 '.status = "busy"' # idle at T0+30, while both slots are still taken
+wpane t2 111 ay; scen t2 busy-silent handoff  # these two hold the slots until T0+30
+wpane t3 121 bee; scen t3 busy-silent handoff
+wpane t4 131 me 1
+hook '((now == T0 + 30)) && { sf_status 101 idle; answer t2; answer t3; }'
 rw # me also waits for the panes past /exit: ay and bee until done at T0+60, then cee (asked T0+40) until T0+80
-[[ "$(ask_at w1:p1) $(ask_at w1:p4)" == "$((T0 + 40)) $((T0 + 80))" ]]; check "issuer does not jump a pane waiting for a slot" $?
+[[ "$(ask_at t1) $(ask_at t4)" == "$((T0 + 40)) $((T0 + 80))" ]]; check "issuer does not jump a pane waiting for a slot" $?
 
 wworld
-wpane w1:p2 111 beta; wpane %3 121 gamma; wpane w1:p4 131 delta
+wpane t2 111 beta; wpane %3 121 gamma; wpane t4 131 delta
 long=a-very-long-session-name-that-goes-on-and-on-and-on
-st_set 111 10 ''; st_set 111 14 ''; st_set 111 4 'งาน ทดลอง/1' # no session or agent name: the workspace label
+st_set 111 10 ''; st_set 111 4 'งาน ทดลอง/1'                 # no session name: the terminal's label
 st_set 121 10 ''                                              # tmux, no session name: the tmux session
 st_set 131 10 "$long"
 rw
-[[ -n "$(handoff __________1-w1_p2)" && -n "$(handoff main-_3)" && -n "$(handoff "${long:0:40}-w1_p4")" ]] \
-  && restarted 'งาน ทดลอง/1 (herdr w1:p2)' && restarted 'main (tmux main:0.3)'
+[[ -n "$(handoff __________1-t2)" && -n "$(handoff main-_3)" && -n "$(handoff "${long:0:40}-t4")" ]] \
+  && restarted 'งาน ทดลอง/1 (hc t2)' && restarted 'main (tmux main:0.3)'
 check "state rows with empty name fields: columns stay in place, names fall back" $?
 
 # --- restart-worker.sh: /exit, relaunch, confirm, signals (spec §2 "หยุด worker", §3 steps 4–6)
@@ -1007,7 +992,7 @@ argv() { # PANE: A = the argv of its new claude, padded with empty ones to 4 (se
   while IFS= read -r -d '' a; do A+=("$a"); done 2>/dev/null <"$FAKE/argv-$1"
   while ((${#A[@]} < 4)); do A+=(''); done
 }
-at() { grep -nxF -- "$2" "$FAKE/$1-calls" 2>/dev/null | head -1 | cut -d: -f1; } # tmux|herdr CALL: its line, if it was made
+at() { grep -nxF -- "$2" "$FAKE/$1-calls" 2>/dev/null | head -1 | cut -d: -f1; } # tmux|hc CALL: its line, if it was made
 inorder() { local p=0 x; for x; do [[ -n "$x" ]] && ((x > p)) || return 1; p=$x; done; } # LINE...: all made, in this order
 respawn_call() { echo "respawn-pane -t $1 -c $2 /bin/sh -c exec claude --name \"\$1\" \"\$(cat \"\$2\")\" sh $3 $4"; } # PANE DIR NAME FILE
 pane_proc() { mkdir -p "$1"; st_set 101 12 "$1"; st_set 101 8 -; proc_set 101 2 1; } # DIR: Claude 101 is its pane's process, in DIR
@@ -1022,29 +1007,28 @@ rw_bg() { # REAL_SLEEP OUT: start the worker in a process group of its own, as i
   set -m; KIT_FAKE_REAL_SLEEP=$1 /bin/bash "$here/restart-worker.sh" "$WST" >"$2" 2>&1 & WP=$!; set +m
 }
 
-wworld; wpane w1:p1 101 alpha
+wworld; wpane t1 101 alpha
 rw
-s=$(start_of alpha-w1_p1); argv w1:p1
+s=$(start_of alpha-t1); argv t1
 [[ -n "$s" && "$(cat "$s")" == "$HEAD"$'\n\n'"$H"$'\n\n'"$FOOT" ]] \
-  && inorder "$(at herdr 'agent prompt w1:p1 /exit')" "$(at herdr "pane run w1:p1 $(relaunch_of alpha alpha-w1_p1)")" \
-    "$(at herdr 'agent rename w1:p1 alpha')" \
+  && inorder "$(at hc 'send t1 /exit')" "$(at hc "send t1 $(relaunch_of alpha alpha-t1)")" \
   && [[ "${#A[@]} ${A[*]:0:3}" == "4 claude --name alpha" && "${A[3]}" == "$(cat "$s")" ]] \
-  && grep -qF "relaunch command: $(relaunch_of alpha alpha-w1_p1) (it was started as: claude)" "$LOG" \
-  && grep -qx 'Summary  restarted: 1 · skipped: 0' "$FAKE/wout" && restarted 'alpha (herdr w1:p1)' && [[ ! -e "$LOCK" ]] \
+  && grep -qF "relaunch command: $(relaunch_of alpha alpha-t1) (it was started as: claude)" "$LOG" \
+  && grep -qx 'Summary  restarted: 1 · skipped: 0' "$FAKE/wout" && restarted 'alpha (hc t1)' && [[ ! -e "$LOCK" ]] \
   && ! grep -q '^{' "$LOG"
-check "herdr full restart: handoff, /exit, relaunch, rename, Summary restarted, no herdr JSON in the log" $?
+check "hc full restart: handoff, /exit, relaunch, Summary restarted, no hc reply in the log" $?
 
-wworld; wpane w1:p1 101 alpha; scen w1:p1 hostile
+wworld; wpane t1 101 alpha; scen t1 hostile
 bad='งาน/ก'\''ข "ค" $x'; st_set 101 10 "$bad"
 rw
-s=$(ls "$HANDOFFS"/*.start.md 2>/dev/null); argv w1:p1
+s=$(ls "$HANDOFFS"/*.start.md 2>/dev/null); argv t1
 [[ -n "$s" && "${#A[@]} ${A[1]}" == '4 --name' && "${A[2]}" == "$bad" && "${A[3]}" == "$(cat "$s")" && "${A[3]}" == *"$EVIL"$'\n\n'"$FOOT" ]] \
-  && ! ls "$FAKE"/pwned* >/dev/null 2>&1 && restarted "$bad (herdr w1:p1)"
+  && ! ls "$FAKE"/pwned* >/dev/null 2>&1 && restarted "$bad (hc t1)"
 check "relaunch argv survives hostile name and handoff" $?
 
-wworld; wpane w1:p1 101 alpha; huge=$(printf 'a%.0s' {1..1100}); st_set 101 10 "$huge"
+wworld; wpane t1 101 alpha; huge=$(printf 'a%.0s' {1..1100}); st_set 101 10 "$huge"
 rw
-skipped "$huge (herdr w1:p1)" 'relaunch command too long' && ! grep -q -e /exit -e '^pane run' "$FAKE/herdr-calls" \
+skipped "$huge (hc t1)" 'relaunch command too long' && ! grep -q -e /exit -e '^send t1 claude' "$FAKE/hc-calls" \
   && grep -qF "relaunch command: claude --name $huge" "$LOG"
 check "relaunch line over 1024 bytes: skipped before /exit" $?
 
@@ -1101,15 +1085,15 @@ check "respawn uses cwd with spaces" $?
 [[ "$(grep -c '^respawn-pane ' "$FAKE/tmux-calls")" == 2 ]] && restarted 'alpha (tmux main:0.1)'
 check "respawn-pane refused once: tried again, once" $?
 
-wworld; wpane w1:p1 101 alpha; echo vim >"$FAKE/life-w1:p1"
+wworld; wpane t1 101 alpha; echo vim >"$FAKE/life-t1"
 rw
-skipped 'alpha (herdr w1:p1)' 'shell not in front' && ! grep -q '^pane run' "$FAKE/herdr-calls" \
-  && grep -qF "relaunch it yourself: $(relaunch_of alpha alpha-w1_p1)" "$LOG" && [[ "$(cat "$FAKE/now")" == $((T0 + 40)) ]]
+skipped 'alpha (hc t1)' 'shell not in front' && ! grep -q '^send t1 claude' "$FAKE/hc-calls" \
+  && grep -qF "relaunch it yourself: $(relaunch_of alpha alpha-t1)" "$LOG" && [[ "$(cat "$FAKE/now")" == $((T0 + 40)) ]]
 check "shell not in front for 10s (vim): no relaunch keys, command logged" $?
-wworld; wpane w1:p1 101 alpha; echo vim >"$FAKE/life-w1:p1"
+wworld; wpane t1 101 alpha; echo vim >"$FAKE/life-t1"
 hook '((now == T0 + 33)) && proc_set 100 4 100'
 rw
-[[ "$(grep -c '^pane run w1:p1 ' "$FAKE/herdr-calls")" == 1 ]] && restarted 'alpha (herdr w1:p1)'
+[[ "$(grep -c '^send t1 claude ' "$FAKE/hc-calls")" == 1 ]] && restarted 'alpha (hc t1)'
 check "shell back in front after 3s: relaunched" $?
 wworld tmux; wpane %1 101 alpha
 hook '((now == T0 + 30)) && echo 1 >"$FAKE/mode-%1"' # copy mode between /exit and the relaunch
@@ -1117,50 +1101,53 @@ rw
 skipped 'alpha (tmux main:0.1)' 'in copy mode' && ! grep -q 'send-keys -t %1 -l claude' "$FAKE/tmux-calls"
 check "tmux copy mode after /exit: no relaunch keys" $?
 
-wworld; wpane w1:p1 101 alpha
-hook '((now == T0 + 30)) && : >"$FAKE/hpanes"' # its pane closed after /exit
-rw
-skipped 'alpha (herdr w1:p1)' gone && ! grep -q '^pane run' "$FAKE/herdr-calls" \
-  && grep -qF "relaunch it yourself: $(relaunch_of alpha alpha-w1_p1)" "$LOG"
-check "herdr pane closed after /exit: gone, no relaunch keys" $?
-wworld; wpane w1:p1 101 alpha; echo 'echo "{\"result\":{\"panes\":[{\"pane_id\":\"w1:p1\",\"cmd\":\"a"' >"$FAKE/pane-list"
-rw
-[[ "$(grep -c '^pane run w1:p1 ' "$FAKE/herdr-calls")" == 1 ]] && restarted 'alpha (herdr w1:p1)'
-check "herdr pane list with broken JSON after /exit: still relaunched" $?
-wworld; wpane w1:p1 101 alpha; echo 'echo "{\"error\":{\"code\":\"busy\"}}"; exit 1' >"$FAKE/pane-list"
-rw
-[[ "$(grep -c '^pane run w1:p1 ' "$FAKE/herdr-calls")" == 1 ]] && restarted 'alpha (herdr w1:p1)'
-check "herdr pane list fails after /exit: still relaunched" $?
+gone_after_exit() { # LABEL HOOK: HOOK runs at T0+30, after /exit; then the terminal is gone and gets no relaunch keys
+  wworld; wpane t1 101 alpha; hook "((now == T0 + 30)) && { $2; }"
+  rw
+  skipped 'alpha (hc t1)' gone && grep -qF 'alpha (hc t1) — gone: its terminal closed after /exit' "$LOG" \
+    && ! grep -q '^send t1 claude' "$FAKE/hc-calls" && grep -qF "relaunch it yourself: $(relaunch_of alpha alpha-t1)" "$LOG"
+  check "$1" $?
+}
+relaunched_after_exit() { # LABEL HOOK: HOOK runs at T0+30, after /exit; hc says nothing for sure, so it is relaunched
+  wworld; wpane t1 101 alpha; hook "((now == T0 + 30)) && { $2; }"
+  rw
+  [[ "$(grep -c '^send t1 claude ' "$FAKE/hc-calls")" == 1 ]] && restarted 'alpha (hc t1)'
+  check "$1" $?
+}
+gone_after_exit "terminal closed after /exit: gone, no relaunch keys" 'rm "$FAKE/hget-t1"'
+gone_after_exit "terminal finished after /exit: gone" 'hget t1 finished'
+relaunched_after_exit "hc get broken JSON after /exit: still relaunched" 'echo "{\"state\":\"live\",\"status\":" >"$FAKE/hget-t1"'
+relaunched_after_exit "hc get fails (exit 1) after /exit: still relaunched" 'echo "exit 1" >"$FAKE/hook-hc-get"'
 
-wworld; wpane w1:p1 101 alpha; echo exit-fails >"$FAKE/life-w1:p1"
+wworld; wpane t1 101 alpha; echo exit-fails >"$FAKE/life-t1"
 rw
-[[ -s "$FAKE/argv-w1:p1" ]] && restarted 'alpha (herdr w1:p1)'
+[[ -s "$FAKE/argv-t1" ]] && restarted 'alpha (hc t1)'
 check "/exit send fails but claude exits: still relaunched" $?
 
-wworld; wpane w1:p1 101 alpha; echo dialog >"$FAKE/life-w1:p1"
+wworld; wpane t1 101 alpha; echo dialog >"$FAKE/life-t1"
 rw
-grep -qx 'Summary  restarted: 1 · skipped: 0' "$FAKE/wout" && restarted 'alpha (herdr w1:p1) — started, waiting on screen' \
-  && grep -q 'alpha (herdr w1:p1) — started, waiting on screen' "$LOG"
+grep -qx 'Summary  restarted: 1 · skipped: 0' "$FAKE/wout" && restarted 'alpha (hc t1) — started, waiting on screen' \
+  && grep -q 'alpha (hc t1) — started, waiting on screen' "$LOG"
 check "dialog on first start: started, waiting on screen" $?
-wworld; wpane w1:p1 101 alpha; echo nostart >"$FAKE/life-w1:p1"
+wworld; wpane t1 101 alpha; echo nostart >"$FAKE/life-t1"
 rw
-skipped 'alpha (herdr w1:p1)' 'relaunch failed' && grep -qF "relaunch it yourself: $(relaunch_of alpha alpha-w1_p1)" "$LOG" \
-  && [[ "$(grep -c '^pane run w1:p1 ' "$FAKE/herdr-calls") $(cat "$FAKE/now")" == "1 $((T0 + 90))" ]] # 60 s after the relaunch
+skipped 'alpha (hc t1)' 'relaunch failed' && grep -qF "relaunch it yourself: $(relaunch_of alpha alpha-t1)" "$LOG" \
+  && [[ "$(grep -c '^send t1 claude ' "$FAKE/hc-calls") $(cat "$FAKE/now")" == "1 $((T0 + 90))" ]] # 60 s after the relaunch
 check "nothing started: relaunch failed with the command" $?
 
-wworld; wpane w1:p1 101 alpha
-hook '((now == T0 + 20)) && { activity w1:p1; echo 60 >"$FAKE/warp"; }' # typed into after its handoff was read
+wworld; wpane t1 101 alpha
+hook '((now == T0 + 20)) && { activity t1; echo 60 >"$FAKE/warp"; }' # typed into after its handoff was read
 rw
-r2=$(grep -n '^agent prompt w1:p1 \[kit-update restart ' "$FAKE/herdr-calls" | sed -n 2p | cut -d: -f1)
-[[ "$(asks w1:p1) $(grep -c '^agent prompt w1:p1 /exit$' "$FAKE/herdr-calls")" == '2 1' ]] && (($(ask_at w1:p1 2) >= T0 + 1800)) \
-  && inorder "$r2" "$(at herdr 'agent prompt w1:p1 /exit')" && restarted 'alpha (herdr w1:p1)'
+r2=$(grep -n '^send t1 \[kit-update restart ' "$FAKE/hc-calls" | sed -n 2p | cut -d: -f1)
+[[ "$(asks t1) $(grep -c '^send t1 /exit$' "$FAKE/hc-calls")" == '2 1' ]] && (($(ask_at t1 2) >= T0 + 1800)) \
+  && inorder "$r2" "$(at hc 'send t1 /exit')" && restarted 'alpha (hc t1)'
 check "activity after the handoff: no /exit, asked again later" $?
 
 wworld; echo 600 >"$FAKE/warp"
-wpane w1:p1 101 alpha; sf_set 101 '.status = "busy"'; echo no-exit >"$FAKE/life-w1:p1"
-hook '((now == T0 + 12600)) && sf_status 101 idle' '((now == T0 + 14400)) && { rm "$FAKE/life-w1:p1"; fake_exit w1:p1; }'
+wpane t1 101 alpha; sf_set 101 '.status = "busy"'; echo no-exit >"$FAKE/life-t1"
+hook '((now == T0 + 12600)) && sf_status 101 idle' '((now == T0 + 14400)) && { rm "$FAKE/life-t1"; fake_exit t1; }'
 rw # asked at T0+12600, /exit at T0+13800, exits at the cap
-[[ "$(ask_at w1:p1)" == $((T0 + 12600)) ]] && (($(cat "$FAKE/now") > T0 + 14400)) && ! grep -q '4 h' "$LOG" && restarted 'alpha (herdr w1:p1)'
+[[ "$(ask_at t1)" == $((T0 + 12600)) ]] && (($(cat "$FAKE/now") > T0 + 14400)) && ! grep -q '4 h' "$LOG" && restarted 'alpha (hc t1)'
 check "cap reached while exiting: relaunch still completes" $?
 
 wworld tmux; wpane %1 101 alpha; wpane %2 111 me 1
@@ -1170,31 +1157,30 @@ rw
   && ! grep -q 'send-keys -t %1 -l /exit' "$FAKE/tmux-calls"
 check "pane stuck in ready (copy mode) does not hold the issuer back, skipped at the cap" $?
 
-wworld; wpane w1:p1 101 alpha; st_set 101 10 ''; st_set 101 14 ''
+wworld; wpane t1 101 alpha; st_set 101 10 ''
 rw
-argv w1:p1
-[[ "${A[2]}" == 'alpha work' && -n "$(start_of alpha_work-w1_p1)" ]] && ! grep -q 'agent rename' "$FAKE/herdr-calls" \
-  && restarted 'alpha work (herdr w1:p1)'
-check "unnamed herdr agent: no rename, label fallback" $?
+argv t1
+[[ "${A[2]}" == 'alpha work' && -n "$(start_of alpha_work-t1)" ]] && restarted 'alpha work (hc t1)'
+check "unnamed session: label fallback" $?
 
-wworld; wpane w1:p1 101 alpha; echo vim >"$FAKE/life-w1:p1" # its relaunch waits 10 s in the T0+30 tick
-wpane w1:p2 111 beta; sf_set 111 '.status = "busy"'; scen w1:p2 silent
+wworld; wpane t1 101 alpha; echo vim >"$FAKE/life-t1" # its relaunch waits 10 s in the T0+30 tick
+wpane t2 111 beta; sf_set 111 '.status = "busy"'; scen t2 silent
 hook '((now == T0 + 30)) && sf_status 111 idle'
 rw # beta is asked after that wait, at T0+40: not submitted 30 s later, at T0+70
-[[ "$(ask_at w1:p2) $(cat "$FAKE/now")" == "$((T0 + 40)) $((T0 + 70))" ]] && skipped 'beta (herdr w1:p2)' 'request not submitted'
+[[ "$(ask_at t2) $(cat "$FAKE/now")" == "$((T0 + 40)) $((T0 + 70))" ]] && skipped 'beta (hc t2)' 'request not submitted'
 check "a relaunch's 10 s wait does not shorten the next pane's 30 s for its request" $?
-wworld; wpane w1:p1 101 alpha; echo vim >"$FAKE/life-w1:p1"
-wpane w1:p2 111 beta; sf_set 111 '.status = "busy"'; echo no-exit >"$FAKE/life-w1:p2"
+wworld; wpane t1 101 alpha; echo vim >"$FAKE/life-t1"
+wpane t2 111 beta; sf_set 111 '.status = "busy"'; echo no-exit >"$FAKE/life-t2"
 hook '((now == T0 + 10)) && sf_status 111 idle'
 rw # beta gets /exit after alpha's wait, at T0+40: did not exit 60 s later, at T0+100
-[[ "$(cat "$FAKE/now")" == $((T0 + 100)) ]] && skipped 'beta (herdr w1:p2)' 'did not exit'
+[[ "$(cat "$FAKE/now")" == $((T0 + 100)) ]] && skipped 'beta (hc t2)' 'did not exit'
 check "a relaunch's 10 s wait does not shorten the next pane's 60 s to exit" $?
 
-wworld; wpane w1:p1 101 alpha; echo no-exit >"$FAKE/life-w1:p1"
+wworld; wpane t1 101 alpha; echo no-exit >"$FAKE/life-t1"
 echo '[[ -e "$FAKE/armed" && "$*" == *" -p 101" ]] && { rm -f "$FAKE/hook-ps" "$FAKE/armed"; exit 1; }' >"$FAKE/hook-ps"
 hook '((now == T0 + 30)) && touch "$FAKE/armed"' # the first ps of Claude after its /exit fails
 rw
-skipped 'alpha (herdr w1:p1)' 'did not exit' && ! grep -q '^pane run' "$FAKE/herdr-calls"
+skipped 'alpha (hc t1)' 'did not exit' && ! grep -q '^send t1 claude' "$FAKE/hc-calls"
 check "ps failing once while exiting: read again, not taken as exited" $?
 
 wworld tmux; wpane %1 101 alpha; echo '[[ "$*" == *" remain-on-exit on" ]] && exit 1' >"$FAKE/hook-set-option"
@@ -1202,12 +1188,12 @@ rw
 skipped 'alpha (tmux main:0.1)' 'could not set remain-on-exit' && ! grep -q /exit "$FAKE/tmux-calls" && [[ ! -e "$FAKE/roe-%1" ]]
 check "remain-on-exit cannot be set: skipped before /exit" $?
 
-wworld; wpane w1:p1 101 alpha; mv "$FAKE/agents" "$FAKE/agents-ok"; echo '{"result":{"agents":[' >"$FAKE/agents"
-hook '((now == T0 + 20)) && mv "$FAKE/agents-ok" "$FAKE/agents"'
+wworld; wpane t1 101 alpha; mv "$FAKE/hget-t1" "$FAKE/hget-ok"; echo '{"state":"live","status":' >"$FAKE/hget-t1"
+hook '((now == T0 + 20)) && mv "$FAKE/hget-ok" "$FAKE/hget-t1"'
 rw
-[[ "$(ask_at w1:p1)" == $((T0 + 20)) ]] && grep -qF 'alpha (herdr w1:p1) — waiting: herdr answer unreadable' "$LOG" \
-  && restarted 'alpha (herdr w1:p1)'
-check "herdr agent list unreadable: waits, not gone" $?
+[[ "$(ask_at t1)" == $((T0 + 20)) ]] && grep -qF 'alpha (hc t1) — waiting: herdr-core does not answer' "$LOG" \
+  && restarted 'alpha (hc t1)'
+check "hc get unreadable: waits, not gone" $?
 
 wworld tmux; wpane %1 101 alpha; st_set 101 8 -; proc_set 101 2 1; echo 101 >"$FAKE/panepid-%1" # Claude is the pane's
 hook '((now == T0 + 30)) && fake_session 101 S101 alpha idle /x/alpha' # process; its session file is left behind
@@ -1218,31 +1204,31 @@ check "session file of a dead pid after a failed respawn: relaunch failed, not r
 # Signals go to the worker's whole process group, as Ctrl-C or a closed pane send them. The nap after alpha's
 # /exit, while it is exiting, takes 1 s for real (KIT_FAKE_REAL_SLEEP=1); $FAKE/sleeping marks it.
 signal_nap() { hook "((now == T0 + 30)) && { KIT_FAKE_REAL_SLEEP=1; touch '$FAKE/sleeping'; }" "$@"; } # [LINE...]
-wworld; wpane w1:p1 101 alpha; wpane w1:p2 111 beta; sf_set 111 '.status = "busy"'
+wworld; wpane t1 101 alpha; wpane t2 111 beta; sf_set 111 '.status = "busy"'
 signal_nap '((now == T0 + 40)) && sf_status 111 idle'
 rw_bg 0 "$FAKE/wout"
 await "$FAKE/sleeping" && kill -INT -"$WP"; wait "$WP" 2>/dev/null; rc=$?
-[[ $rc == 0 && "$(asks w1:p2)" == 0 && ! -e "$LOCK" ]] && skipped 'beta (herdr w1:p2)' stopped && restarted 'alpha (herdr w1:p1)' \
+[[ $rc == 0 && "$(asks t2)" == 0 && ! -e "$LOCK" ]] && skipped 'beta (hc t2)' stopped && restarted 'alpha (hc t1)' \
   && grep -qx 'Summary  restarted: 1 · skipped: 1' "$LOG"
 check_int "INT to the worker group while sleeping: trap runs, waiting panes stopped, exiting pane finishes, lock released" $?
 
-wworld; wpane w1:p1 101 alpha; echo slow-run >"$FAKE/life-w1:p1"
+wworld; wpane t1 101 alpha; echo slow-run >"$FAKE/life-t1"
 rw_bg 0 "$FAKE/wout"
 await "$FAKE/running" && kill -INT -"$WP"; wait "$WP" 2>/dev/null; rc=$?
-[[ $rc == 0 && "$(grep -c '^pane run w1:p1 ' "$FAKE/herdr-calls")" == 1 && -s "$FAKE/argv-w1:p1" ]] && restarted 'alpha (herdr w1:p1)'
-check_int "INT while pane run is in flight: the command completes and is not sent twice" $?
+[[ $rc == 0 && "$(grep -c '^send t1 claude ' "$FAKE/hc-calls")" == 1 && -s "$FAKE/argv-t1" ]] && restarted 'alpha (hc t1)'
+check_int "INT while hc send of the relaunch is in flight: the command completes and is not sent twice" $?
 
-wworld; wpane w1:p1 101 alpha # TERM (not INT: see check_int) while its background shells are read, before it is asked
+wworld; wpane t1 101 alpha # TERM (not INT: see check_int) while its background shells are read, before it is asked
 echo '[[ "$*" == "-A -o pid=,ppid=,args=" ]] && { rm -f "$FAKE/hook-ps"; kill -TERM -"$(ps -o pgid= -p $$ | tr -d " ")"; }' >"$FAKE/hook-ps"
 rw_bg 0 "$FAKE/wout"; wait "$WP" 2>/dev/null; rc=$?
-[[ $rc == 0 && "$(asks w1:p1)" == 0 && ! -e "$LOCK" ]] && ! grep -q '^agent prompt' "$FAKE/herdr-calls" && skipped 'alpha (herdr w1:p1)' stopped
+[[ $rc == 0 && "$(asks t1)" == 0 && ! -e "$LOCK" ]] && ! grep -q '^send ' "$FAKE/hc-calls" && skipped 'alpha (hc t1)' stopped
 check "stop signal while a pane is checked: no request, stopped" $?
 
-wworld; wpane w1:p1 101 alpha; signal_nap
+wworld; wpane t1 101 alpha; signal_nap
 mkfifo "$FAKE/fifo"; cat "$FAKE/fifo" >"$FAKE/wout" & cp=$! # the worker's pane: closing it closes stdout
 rw_bg 0 "$FAKE/fifo"
 await "$FAKE/sleeping" && kill -HUP -"$WP"; kill "$cp" 2>/dev/null; wait "$cp" 2>/dev/null; wait "$WP" 2>/dev/null; rc=$?
-[[ $rc == 0 && -s "$FAKE/argv-w1:p1" && ! -e "$LOCK" ]] && grep -qx 'Summary  restarted: 1 · skipped: 0' "$LOG"
+[[ $rc == 0 && -s "$FAKE/argv-t1" && ! -e "$LOCK" ]] && grep -qx 'Summary  restarted: 1 · skipped: 0' "$LOG"
 check "HUP with stdout closed: worker keeps going and finishes the relaunch" $?
 
 ! test -e "$FAKE/real-hc-called"; check "the real hc is never called" $?
