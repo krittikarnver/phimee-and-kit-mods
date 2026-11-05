@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# kit-update reload — type /reload-plugins into every idle Claude Code session in tmux or herdr.
+# kit-update reload — type /reload-plugins into every idle Claude Code session in tmux or herdr-core.
 #
 # A session only loads updated plugins after /reload-plugins, and nothing can
-# run it from outside. When Claude runs in tmux or herdr, this types it for you:
+# run it from outside. When Claude runs in tmux or herdr-core (hc), this types it for you:
 #   tmux:  1. lists every tmux pane      (tmux list-panes -a)
 #          2. keeps the Claude Code ones (the process is named after its version, or `claude`)
 #          3. reads each one's screen and skips it unless it is idle with an empty prompt
-#   herdr: 1. lists the Claude agents    (herdr agent list)
-#          2. skips any whose state is not idle or done (herdr knows busy and open questions)
-#          3. reads each one's screen and skips it unless the prompt is empty
+#   hc:    1. lists the Claude terminals (hc ls), only when herdr-core is already running: hc would start it
+#          2. skips any whose status is working or blocked (hc knows busy and open questions) or that has
+#             something else in front than Claude Code (a tmux client, say)
+#          3. reads each one's screen (hc-screen.pl) and skips it unless the prompt is empty
 #   then types /reload-plugins + Enter into the rest.
 #
-# Skipped, never typed into: the pane this runs from ($TMUX_PANE, $HERDR_PANE_ID),
-# a turn in progress, an open question or dialog (Enter would answer it), a
-# half-typed prompt. The screen check is a reading of the UI: when unsure, it skips.
+# Skipped, never typed into: the pane this runs from ($TMUX_PANE, $HC_TERMINAL_ID outside tmux), a turn in
+# progress, an open question or dialog (Enter would answer it), a half-typed prompt. The screen check is
+# a reading of the UI: when unsure, it skips.
 #
 # Usage: reload-all.sh   (no options)
-# Exit code: 0, also when there is no tmux or herdr server.
+# Exit code: 0, also when there is no tmux or herdr-core server.
 
 set -uo pipefail
 
-TMUX_BIN="${KIT_UPDATE_TMUX_BIN:-tmux}"     # override for testing
-HERDR_BIN="${KIT_UPDATE_HERDR_BIN:-herdr}"  # override for testing
+TMUX_BIN="${KIT_UPDATE_TMUX_BIN:-tmux}"  # override for testing
 
 if [[ -t 1 ]]; then
   B=$'\e[1m'; G=$'\e[32m'; N=$'\e[0m'
@@ -57,36 +57,46 @@ if panes=$("$TMUX_BIN" list-panes -a -F '#{pane_id}	#{session_name}:#{window_ind
   done <<<"$panes"
 fi
 
-if agents=$("$HERDR_BIN" agent list 2>/dev/null); then
+# Inside tmux, HC_TERMINAL_ID may be left over from the hc tab that started it: it is no terminal of ours.
+me=; [[ -z "${TMUX:-}" ]] && me=${HC_TERMINAL_ID:-}
+
+if hc_up && terms=$(hc_call ls --json 2>/dev/null); then
   found=1
-  while IFS=$'\t' read -r id name state; do
-    [[ -z "$id" ]] && continue
-    if [[ "$id" == "${HERDR_PANE_ID:-}" ]]; then
+  while IFS=$'\x1f' read -r t status name; do
+    [[ -z "$t" ]] && continue
+    if [[ "$t" == "$me" ]]; then
       skipped+=("$name — this session: run /reload-plugins here yourself")
       continue
     fi
-    case "$state" in
-      idle | done) ;;
-      working) skipped+=("$name — busy"); continue ;;
-      blocked) skipped+=("$name — waiting on a question"); continue ;;
-      *) skipped+=("$name — state $state"); continue ;;
-    esac
 
-    screen=$("$HERDR_BIN" agent read "$id" --source visible --format ansi 2>/dev/null | screen_tail)
-    if ! prompt_empty "$screen"; then
-      skipped+=("$name — prompt not empty or not found")
+    # hc lists the terminal's agent even when a tmux client is in front of it, and keys would go to that
+    if ! info=$(hc_call get "$t" --json 2>/dev/null); then
+      skipped+=("$name — herdr-core does not answer")
+      continue
+    fi
+    front=$(jq -r '.foreground.name // empty' <<<"$info" 2>/dev/null)
+    if [[ ! "$front" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$front" != claude ]]; then
+      skipped+=("$name — Claude Code is not in front (${front:-nothing})")
       continue
     fi
 
-    # agent prompt sends the text and Enter together, and refuses an agent that is blocked
-    "$HERDR_BIN" agent prompt "$id" '/reload-plugins' >/dev/null 2>&1 \
-      && reloaded+=("$name") || skipped+=("$name — agent prompt failed")
-  done < <(jq -r '.result.agents[] | select(.agent == "claude")
-    | [.pane_id, "\(.name // (.cwd | split("/") | last)) (herdr \(.pane_id))", .agent_status] | @tsv' <<<"$agents")
+    case "$(hc_state "$t" "$status")" in
+      busy) skipped+=("$name — busy"); continue ;;
+      question) skipped+=("$name — waiting on a question"); continue ;;
+      draft) skipped+=("$name — prompt not empty or not found"); continue ;;
+      unreadable) skipped+=("$name — screen unreadable"); continue ;;
+    esac
+
+    hc_call send "$t" '/reload-plugins' >/dev/null 2>&1 \
+      && reloaded+=("$name") || skipped+=("$name — hc send failed")
+  done < <(jq -r '.terminals[] | select(.agent == "claude-code" and .state == "live" and (.address | contains("/") | not))
+    | [.address, (.status // ""),
+       ((.name | select(. != "")) // (.where | select(. != "")) // ((.cwd // "") | split("/") | last)) + " (hc " + .address + ")"]
+    | join("\u001f")' <<<"$terms")
 fi
 
 if ((!found)); then
-  echo "No tmux or herdr server — run /reload-plugins in each Claude Code session yourself."
+  echo "No tmux or herdr-core server — run /reload-plugins in each Claude Code session yourself."
   exit 0
 fi
 

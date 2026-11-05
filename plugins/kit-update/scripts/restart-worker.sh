@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# kit-update restart worker — restart-all.sh starts it in a pane of its own with the snapshot it took,
-# <config>/kit-update/restart.lock/state.<token>, and it restarts each session in it once idle (spec §3).
+# kit-update restart worker — restart-all.sh starts it in a tmux session or herdr-core terminal of its own with
+# the snapshot it took, <config>/kit-update/restart.lock/state.<token>, and it restarts each session in it once
+# idle (spec §3). "Pane" below is a tmux pane or an hc terminal.
 #
 # Every 10 s it moves each pane in the snapshot on by one step. A pane goes through
 #   wait      until it may take keys: its session file says idle, the screen is idle with an empty
-#             prompt, nobody scrolls the pane, no background Bash shell runs under Claude, a request
-#             slot is free (2 at a time) and the time to ask again has come
+#             prompt (hc: its status is not working or blocked either), a tmux pane is not in copy mode,
+#             no background Bash shell runs under Claude, a request slot is free (2 at a time) and the
+#             time to ask again has come
 #   asked     "[kit-update restart <nonce>] ..." was typed into it; the answer is read from the transcript
 #             after the offset taken before sending. NOT-READY → notready, a handoff → ready, a stale
 #             one → wait (ask again 30 min after the last request), no usable handoff → wait 5 min, 3 times
@@ -18,9 +20,9 @@
 #   exiting   until its Claude is gone, 60 s at most
 #   relaunching  a tmux pane that died with Claude is respawned with that command as argv; else its shell
 #             must be back in front within 10 s, and the command is typed into it
-#   confirming  until a new Claude there has a session file (herdr: its agent name is set back), 60 s at most
+#   confirming  until a new Claude there has a session file, 60 s at most
 # and ends as gone (not the Claude of the snapshot any more), skipped:<reason> or done. Before any key up to
-# /exit the pane must still run the same Claude (pid, start time, tty; herdr: the pane is listed) in front of
+# /exit the pane must still run the same Claude (pid, start time, tty; hc: the terminal is live) in front of
 # its terminal. The session that started the restart asks only when no other pane holds or waits for a slot,
 # or is past /exit and not relaunched yet. A pane that hasn't got /exit after 4 h is skipped (for that session,
 # 4 h from when it could start). A tmux pane gets its own remain-on-exit back however its relaunch ends.
@@ -47,7 +49,7 @@ SOCK=$(hdr socket) WMUX=$(hdr mux)
 tm() { "$TMUX_BIN" ${SOCK:+-S "$SOCK"} "$@"; }
 
 # The owner file now names this worker, so restart-all.sh can tell it is running and where.
-me=${HERDR_PANE_ID:-?}
+me=${HC_TERMINAL_ID:-?}
 [[ "$WMUX" == tmux ]] && me=${TMUX_PANE:-?}
 printf '%s %s %s\ncmd %s\n' "$TOKEN" $$ "$me" "$(proc_field $$ args)" >"$LOCK/owner.$TOKEN" \
   && mv -f "$LOCK/owner.$TOKEN" "$LOCK/owner" || { echo "Could not write $LOCK/owner"; lock_release "$TOKEN"; exit 1; }
@@ -59,30 +61,31 @@ CAP=14400  # 4 h, for panes that haven't reached /exit
 SLOTS=2    # panes asked at once
 
 # One entry per state row (the columns, then what the worker keeps):
-#   MUX PANE_ID LABEL PID PROCSTART TTY SHELL_PID SID NAME VERSION CWD ISSUER AGENT_NAME CMDLINE
-#   SNAME   the name it goes by: NAME, else the herdr agent name or workspace label, else the tmux session
-#   SHOWN   "SNAME (herdr PANE_ID)" / "SNAME (tmux LABEL)", for the log and the Summary
+#   MUX PANE_ID LABEL PID PROCSTART TTY SHELL_PID SID NAME VERSION CWD ISSUER (an empty column) CMDLINE
+#   SNAME   the name it goes by: NAME, else the hc terminal's label, else the tmux session
+#   SHOWN   "SNAME (hc PANE_ID)" / "SNAME (tmux LABEL)", for the log and the Summary
 #   FILE    "<SNAME>-<PANE_ID>" for the handoff file: other than [A-Za-z0-9_-] is _, the name part <= 40 bytes
 #   PH      the phase; NONCE OFF ASKED: the last request, its transcript offset and time
 #   BASE_OFF BASE_SUA  transcript offset and statusUpdatedAt when the answer was read, to see activity after it
 #   NEXT_ASK  not asked before then; FAILS  answers that were no handoff; BUSY  status busy seen since the request
+#   HC_STATUS  hc: the terminal's status word, from identity_ok this tick
 #   WHY     why it isn't asked yet (the reason it is skipped with at the cap); SLOTWAIT  ready but no slot, this tick
 #   HANDOFF the handoff file; START its .start.md, the first message after the relaunch; LINE the relaunch command
 #   ROE ROE_SET  tmux: the pane's own remain-on-exit (empty: none) and whether the worker has set it on since
 #   EXITED SENT  when /exit, and the relaunch, were sent; RESPAWNED  the relaunch was a tmux respawn-pane
 N=0 ORDER= late=
-while IFS=$'\x1f' read -r _ mux pane label pid start tty sh sid name ver cwd iss aname args; do
+while IFS=$'\x1f' read -r _ mux pane label pid start tty sh sid name ver cwd iss _ args; do
   MUX[N]=$mux PANE_ID[N]=$pane LABEL[N]=$label PID[N]=$pid PROCSTART[N]=$start TTY[N]=$tty SHELL_PID[N]=$sh
-  SID[N]=$sid NAME[N]=$name VERSION[N]=$ver CWD[N]=$cwd ISSUER[N]=$iss AGENT_NAME[N]=$aname CMDLINE[N]=$args
-  if [[ "$mux" == herdr ]]; then
-    SNAME[N]=${name:-${aname:-$label}} SHOWN[N]="${name:-${aname:-$label}} (herdr $pane)"
+  SID[N]=$sid NAME[N]=$name VERSION[N]=$ver CWD[N]=$cwd ISSUER[N]=$iss CMDLINE[N]=$args
+  if [[ "$mux" == hc ]]; then
+    SNAME[N]=${name:-$label} SHOWN[N]="${name:-$label} (hc $pane)"
   else
     SNAME[N]=${name:-${label%%:*}} SHOWN[N]="${name:-${label%%:*}} (tmux $label)"
   fi
   FILE[N]=$(jq -rn --arg n "${SNAME[N]}" --arg p "$pane" '"\($n | gsub("[^A-Za-z0-9_-]"; "_") | .[:40])-\($p | gsub("[^A-Za-z0-9_-]"; "_"))"')
   PH[N]=wait NONCE[N]= OFF[N]=0 ASKED[N]=0 BASE_OFF[N]=0 BASE_SUA[N]= NEXT_ASK[N]=0 FAILS[N]=0 BUSY[N]=0
   WHY[N]='not checked yet' SLOTWAIT[N]=0 HANDOFF[N]= START[N]= LINE[N]= ROE[N]= ROE_SET[N]=0 EXITED[N]=0 SENT[N]=0
-  RESPAWNED[N]=0
+  RESPAWNED[N]=0 HC_STATUS[N]=
   if [[ "$iss" == 1 ]]; then late+=" $N"; else ORDER+=" $N"; fi
   N=$((N + 1))
 done < <(awk -F'\t' '$1 == "pane"' "$STATE" | tr '\t' '\037') # \x1f, not tab: read merges empty tab-separated fields
@@ -111,29 +114,28 @@ why() {
 }
 
 # 0 when pane I still runs the Claude of the snapshot, in front of its terminal: same pid, start
-# time (its session file and the live process) and tty; in herdr, the pane is still listed.
+# time (its session file and the live process) and tty; in hc, its terminal is live (HC_STATUS: its status word).
 # 1 when it doesn't (gone); 2 when it is there but can't take keys now (WHY says why).
 identity_ok() {
-  local i=$1 row l p pp g t tty w1 w2 w3 w4 w5
+  local i=$1 row p pp g t tty w1 w2 w3 w4 w5 s
   row=$(proc_row "${PID[i]}") || return 1
   read -r p pp g t tty w1 w2 w3 w4 w5 _ <<<"$row" # one row: pgid and tpgid of the same moment
   [[ "$tty" == "${TTY[i]}" && "$w1 $w2 $w3 $w4 $w5" == "$(tr -s ' ' <<<"${PROCSTART[i]}")" \
     && "$(sf_get "${PID[i]}" procStart)" == "${PROCSTART[i]}" ]] || return 1
-  if [[ "${MUX[i]}" == herdr ]]; then
-    l=$("$HERDR_BIN" agent list 2>/dev/null) || { why "$i" "herdr does not answer"; return 2; }
-    jq -e --arg p "${PANE_ID[i]}" '.result.agents | if type == "array" then any(.[]; .pane_id == $p) else error("no list") end' \
-      <<<"$l" >/dev/null 2>&1
+  if [[ "${MUX[i]}" == hc ]]; then
+    s=$(hc_term "${PANE_ID[i]}")
     case $? in
-      0) ;;
-      1) return 1 ;; # a list without the pane
-      *) why "$i" "herdr answer unreadable"; return 2 ;;
+      0) HC_STATUS[i]=$s ;;
+      1) return 1 ;;
+      *) why "$i" "herdr-core does not answer"; return 2 ;; # no proof that it is gone
     esac
   fi
   [[ "$g" == "$t" ]] || { why "$i" "not in front of its terminal (suspended?)"; return 2; }
 }
 
 # 0 when keys may go to pane I now (spec §3 step 1): its session is idle, the screen is idle with an
-# empty prompt (reload's check), nobody scrolls the pane, and no background Bash shell runs.
+# empty prompt (reload's check; in hc after the status word identity_ok read this tick), a tmux pane is not
+# in copy mode, and no background Bash shell runs.
 pane_sendable() {
   local i=$1 p=${PANE_ID[i]} s
   case $(sf_get "${PID[i]}" status) in
@@ -141,36 +143,27 @@ pane_sendable() {
     shell) why "$i" "background process still running"; return 1 ;;
     *) why "$i" busy; return 1 ;;
   esac
-  if [[ "${MUX[i]}" == herdr ]]; then
-    s=$("$HERDR_BIN" agent list 2>/dev/null | jq -r --arg p "$p" '.result.agents[]? | select(.pane_id == $p) | .agent_status' 2>/dev/null)
-    case $s in
-      idle | done) ;;
-      blocked) why "$i" "waiting on a question"; return 1 ;;
-      *) why "$i" busy; return 1 ;;
-    esac
-    s=$("$HERDR_BIN" agent read "$p" --source visible --format ansi 2>/dev/null | screen_tail)
-    prompt_empty "$s" || { why "$i" "prompt not empty or not found"; return 1; }
+  if [[ "${MUX[i]}" == hc ]]; then
+    s=$(hc_state "$p" "${HC_STATUS[i]}")
   else
-    s=$(tm capture-pane -p -e -t "$p" 2>/dev/null | screen_tail)
-    case $(screen_state "$s") in
-      busy) why "$i" busy; return 1 ;;
-      question) why "$i" "waiting on a question"; return 1 ;;
-      draft) why "$i" "prompt not empty or not found"; return 1 ;;
-    esac
+    s=$(screen_state "$(tm capture-pane -p -e -t "$p" 2>/dev/null | screen_tail)")
   fi
+  case $s in
+    busy) why "$i" busy; return 1 ;;
+    question) why "$i" "waiting on a question"; return 1 ;;
+    draft) why "$i" "prompt not empty or not found"; return 1 ;;
+    unreadable) why "$i" "screen unreadable"; return 1 ;;
+  esac
   not_scrolled "$i" || return 1
   [[ -z "$(bg_shells "${PID[i]}")" ]] || { why "$i" "background process still running"; return 1; }
 }
 
-# 0 when nobody scrolls pane I, so keys reach what runs in it: tmux not in copy mode, herdr at the bottom.
+# 0 when nobody scrolls pane I, so keys reach what runs in it: tmux not in copy mode. herdr-core scrolls
+# on the viewer's side only, and hc send writes to the program.
 not_scrolled() {
   local i=$1 p=${PANE_ID[$1]}
-  if [[ "${MUX[i]}" == herdr ]]; then
-    [[ "$("$HERDR_BIN" pane get "$p" 2>/dev/null | jq -r '.result.pane.scroll.offset_from_bottom' 2>/dev/null)" == 0 ]] \
-      || { why "$i" "scrolled up"; return 1; }
-  else
-    [[ "$(tm display-message -p -t "$p" '#{pane_in_mode}' 2>/dev/null)" == 0 ]] || { why "$i" "in copy mode"; return 1; }
-  fi
+  [[ "${MUX[i]}" == hc ]] && return 0
+  [[ "$(tm display-message -p -t "$p" '#{pane_in_mode}' 2>/dev/null)" == 0 ]] || { why "$i" "in copy mode"; return 1; }
 }
 
 asked_count() { local j c=0; for ((j = 0; j < N; j++)); do [[ "${PH[j]}" == asked ]] && c=$((c + 1)); done; echo $c; }
@@ -203,8 +196,8 @@ send_request() {
   if ((STOPPING)); then finish "$i" skipped:stopped; return; fi
   NONCE[i]=$n ASKED[i]=$a BUSY[i]=0 PH[i]=asked
   ku_log "${SHOWN[i]}" "asked for a handoff (request $n, its transcript read from byte ${OFF[i]})"
-  if [[ "${MUX[i]}" == herdr ]]; then
-    run_detached "$HERDR_BIN" agent prompt "${PANE_ID[i]}" "$t"
+  if [[ "${MUX[i]}" == hc ]]; then
+    run_detached hc_call send "${PANE_ID[i]}" "$t"
   else # a buffer of our own, pasted as one bracketed paste, then Enter, in one tmux call
     run_detached tm load-buffer -b "kit-update-$n" "$LOCK/request-$n.txt" \; \
       paste-buffer -b "kit-update-$n" -p -d -t "${PANE_ID[i]}" \; send-keys -t "${PANE_ID[i]}" Enter
@@ -299,8 +292,8 @@ exit_pane() {
   if ((STOPPING)); then restore_roe "$i"; finish "$i" skipped:stopped; return; fi
   PH[i]=exiting EXITED[i]=$(ku_now) # not NOW: a relaunch earlier in this tick may have taken 10 s
   ku_log "${SHOWN[i]}" "sent /exit"
-  if [[ "${MUX[i]}" == herdr ]]; then
-    run_detached "$HERDR_BIN" agent prompt "$p" /exit
+  if [[ "${MUX[i]}" == hc ]]; then
+    run_detached hc_call send "$p" /exit
   else
     run_detached tm send-keys -t "$p" -l /exit \; send-keys -t "$p" Enter
   fi # its status says nothing: whether Claude exits does
@@ -324,10 +317,11 @@ shell_ready() { proc_foreground "${SHELL_PID[$1]}" || { WHY[$1]="shell not in fr
 
 # Pane I's Claude exited: start it again (spec §3 step 5). A tmux pane that died with it is respawned with
 # the command as argv, through no shell of the user's; else the shell that ran it must be back in front
-# (checked each second, 10 s at most), and the command is typed into it. herdr: a pane list without the pane
-# ends it as gone. Every key here is typed once; respawn-pane is tried twice, as it refuses a pane that runs anything.
+# (checked each second, 10 s at most), and the command is typed into it. hc: a terminal that is gone (no such
+# terminal, or finished) ends it as gone. Every key here is typed once; respawn-pane is tried twice, as it
+# refuses a pane that runs anything.
 relaunch() {
-  local i=$1 p=${PANE_ID[$1]} t k l
+  local i=$1 p=${PANE_ID[$1]} t k
   PH[i]=relaunching
   ku_log "${SHOWN[i]}" "exited"
   if [[ "${MUX[i]}" == tmux && "$(tm display-message -p -t "$p" '#{pane_dead}' 2>/dev/null)" == 1 ]]; then
@@ -338,14 +332,10 @@ relaunch() {
     done
     RESPAWNED[i]=1
   else
-    # Gone only when herdr gives a list without the pane: an error or an unreadable answer is no proof.
-    if [[ "${MUX[i]}" == herdr ]] && l=$("$HERDR_BIN" pane list 2>/dev/null) && {
-      jq -e --arg p "$p" '.result.panes | if type == "array" then any(.[]; .pane_id == $p) else error("no list") end' \
-        <<<"$l" >/dev/null 2>&1
-      (($? == 1))
-    }; then
+    # Gone only when herdr-core says so: an error or an unreadable answer is no proof.
+    if [[ "${MUX[i]}" == hc ]] && { hc_term "$p" >/dev/null; (($? == 1)); }; then
       ku_log "${SHOWN[i]}" "relaunch it yourself: ${LINE[i]}"
-      finish "$i" gone "gone: its pane closed after /exit"
+      finish "$i" gone "gone: its terminal closed after /exit"
       return
     fi
     t=$(ku_now)
@@ -359,8 +349,8 @@ relaunch() {
       ku_nap 1
     done
     own_lock
-    if [[ "${MUX[i]}" == herdr ]]; then
-      run_detached "$HERDR_BIN" pane run "$p" "${LINE[i]}"
+    if [[ "${MUX[i]}" == hc ]]; then
+      run_detached hc_call send "$p" "${LINE[i]}"
     else
       run_detached tm send-keys -t "$p" -l "${LINE[i]}" \; send-keys -t "$p" Enter
     fi
@@ -383,18 +373,12 @@ new_claude() {
   echo "$r"
 }
 
-# Pane I was relaunched (spec §3 step 6): done once its new Claude has a session file, and a herdr agent
-# that had a name has it again. After 60 s, a claude process alone counts as started; nothing is a failure.
+# Pane I was relaunched (spec §3 step 6): done once its new Claude has a session file. After 60 s, a claude
+# process alone counts as started; nothing is a failure.
 confirm() {
   local i=$1
   case $(new_claude "$i") in
-    session)
-      if [[ "${MUX[i]}" == herdr && -n "${AGENT_NAME[i]}" ]]; then
-        own_lock
-        run_detached "$HERDR_BIN" agent rename "${PANE_ID[i]}" "${AGENT_NAME[i]}" \
-          || ku_log "${SHOWN[i]}" "could not set its herdr agent name ${AGENT_NAME[i]} again"
-      fi
-      finish "$i" done restarted ;;
+    session) finish "$i" done restarted ;;
     process) ((NOW - SENT[i] >= 60)) && finish "$i" "done:started, waiting on screen" "restarted: started, waiting on screen" ;;
     *)
       if ((NOW - SENT[i] >= 60)); then

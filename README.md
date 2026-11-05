@@ -63,20 +63,21 @@ Claude Code mods ที่พี่หมีกับกิตทำด้วย
 - `/kit-update:all` refresh marketplace ทั้งหมด → อัปเดตทุก install ตาม scope ของมัน → สรุปว่าตัวไหนเปลี่ยนจาก version ไหนเป็นอะไร (diff จาก `plugin list --json` ก่อน-หลัง ไม่ได้เชื่อแค่ว่าคำสั่งตอบ ok)
 - `/kit-update:check-all-projects` และ `/kit-update:all-projects` ทำเหมือนกัน แต่รวม install ระดับ project/local ของ project อื่นด้วย (สองตัวแรกทำเฉพาะของ project ปัจจุบัน)
 - เสร็จแล้วพิมพ์ `/reload-plugins` เอง Claude สั่งแทนไม่ได้
-- `/kit-update:reload` พิมพ์ `/reload-plugins` ให้ทุก Claude session อื่นที่รันใน tmux หรือ [herdr](https://herdr.dev) และว่างอยู่ ข้าม session ที่กำลังทำงาน มีคำถามค้าง หรือพิมพ์ค้างไว้ (tmux อ่านจากหน้าจอทั้งหมด herdr ใช้สถานะที่ herdr รู้ แล้วอ่านหน้าจอแค่ช่องพิมพ์ ไม่แน่ใจก็ข้าม) session ที่สั่งต้องพิมพ์เอง ไม่ได้ใช้ tmux หรือ herdr ก็ทำอะไรไม่ได้
-- `/kit-update:restart` ปิดแล้วเปิด Claude session ทุกตัวที่รันใน tmux หรือ herdr ใหม่ รวม session ที่สั่งด้วย (เช่นหลังอัปเดต Claude Code) โดยพก handoff ไปเป็นข้อความแรก
-  - สคริปต์ถ่าย snapshot ของ session ที่มีตอนนั้น (ตัวที่เปิดทีหลังไม่นับ) แล้วเปิด worker ใน pane ของมันเอง (herdr: workspace ใหม่ / tmux: session `kit-update-restart-<เวลา>`) ที่เช็กทุก 10 วินาที
+- `/kit-update:reload` พิมพ์ `/reload-plugins` ให้ทุก Claude session อื่นที่รันใน tmux หรือ [herdr-core](https://herdr.dev) (แอป Herdr) และว่างอยู่ ข้าม session ที่กำลังทำงาน มีคำถามค้าง หรือพิมพ์ค้างไว้ (ทั้งสองดูหน้าจอ โดย herdr-core ดูสถานะก่อน ไม่แน่ใจก็ข้าม) session ที่สั่งต้องพิมพ์เอง ไม่ได้ใช้ tmux หรือ herdr-core ก็ทำอะไรไม่ได้
+- `/kit-update:restart` ปิดแล้วเปิด Claude session ทุกตัวที่รันใน tmux หรือ herdr-core ใหม่ รวม session ที่สั่งด้วย (เช่นหลังอัปเดต Claude Code) โดยพก handoff ไปเป็นข้อความแรก
+  - สคริปต์ถ่าย snapshot ของ session ที่มีตอนนั้น (ตัวที่เปิดทีหลังไม่นับ) แล้วเปิด worker ใน pane ของมันเอง (herdr-core: terminal `kit-update-restart-<เวลา>` / tmux: session ชื่อเดียวกัน) ที่เช็กทุก 10 วินาที
   - session ไหนว่าง worker จะพิมพ์คำขอ handoff ให้ Claude ตอบในแชท (ไม่เขียนไฟล์ ไม่เรียก tool) เก็บคำตอบลง `~/.claude/kit-update/handoffs/` แล้วพิมพ์ `/exit` และเปิด `claude --name <ชื่อเดิม> "<handoff>"` ใหม่ใน pane เดิม session นี้ไปหลังตัวอื่น
   - ทุก session ต้องส่ง context ทั้งก้อนเพื่อเขียน handoff จึงใช้ token (ขอพร้อมกันไม่เกิน 2 session)
-  - log อยู่ที่ `~/.claude/kit-update/restart.log` และมี `Summary` ปิดท้ายทั้งใน log และใน pane ของ worker pane นั้นไม่ปิดเอง ต้องปิดเอง
-  - หยุดได้ด้วย Ctrl-C ใน pane ของ worker (หรือปิด pane นั้น) session ที่ได้รับ `/exit` ไปแล้วจะถูกเปิดใหม่ให้จบ ที่เหลือไม่ถูกแตะ
-  - session ที่ทำงานอยู่ มีคำถามค้าง พิมพ์ค้างไว้ scroll ค้าง หรืออยู่ใน copy mode จะรอจนพร้อม และถูกข้ามถ้าครบ 4 ชั่วโมงแล้วยังไม่พร้อม การตรวจ subagent, teammate, `/loop` และคำถามที่ยังไม่ได้ตอบเป็น best effort ไม่การันตี
+  - log อยู่ที่ `~/.claude/kit-update/restart.log` และมี `Summary` ปิดท้ายทั้งใน log และใน pane ของ worker pane นั้นไม่ปิดเอง ต้องปิดเอง ส่วน terminal ของ worker ใน herdr-core ที่จบแล้วยังอยู่จนกว่าจะ `hc rm <ชื่อ>`
+  - หยุดได้ด้วย Ctrl-C ใน pane ของ worker (หรือปิด pane นั้น) session ที่ได้รับ `/exit` ไปแล้วจะถูกเปิดใหม่ให้จบ ที่เหลือไม่ถูกแตะ (herdr-core: worker ไม่ขึ้นในแอป Herdr ดูได้ด้วย `hc attach <ชื่อ>` หยุดด้วย Ctrl-C ใน attach หรือ `hc kill <ชื่อ>`)
+  - session ที่ทำงานอยู่ มีคำถามค้าง พิมพ์ค้างไว้ หรืออยู่ใน copy mode จะรอจนพร้อม และถูกข้ามถ้าครบ 4 ชั่วโมงแล้วยังไม่พร้อม การตรวจ subagent, teammate, `/loop` และคำถามที่ยังไม่ได้ตอบเป็น best effort ไม่การันตี
   - session ที่มี process เบื้องหลังรันตลอด (dev server, watcher) จะไม่ถูก restart และถูกข้ามหลัง 4 ชั่วโมง
   - session ที่ตอบว่า `NOT-READY` หรือไม่ได้ handoff ที่ใช้ได้ จะไม่ถูกปิด
   - flag ที่ใช้ตอนเปิด session เดิม (เช่น `--model`, `--dangerously-skip-permissions`) ไม่ตามไปด้วย log มีคำสั่งเดิมไว้ให้ ถ้า session เปิดไม่ขึ้น log มีบรรทัด `relaunch it yourself: <คำสั่ง>`
   - shell ใน pane ต้องเป็น bash หรือ zsh (คำสั่งเปิดใหม่ใช้ quoting ของสองตัวนี้)
-  - Claude ใน herdr ต้องรันด้วย config ที่มี hook จาก `herdr integration install claude` (ลงไว้ใน `~/.claude/settings.json`) ไม่งั้น herdr ไม่รู้ session id และ session นั้นถูกข้ามด้วยเหตุผล `herdr shows no session id` เช่น Claude ที่เปิดด้วย `CLAUDE_CONFIG_DIR` อื่น
-  - ถ้าสคริปต์บอกว่าไม่เจอ session ที่สั่ง หรือไม่มี tmux/herdr server ต้องปิดเปิดเอง
+  - ใน herdr-core ทั้งสองคำสั่งต้องมี `perl` (ใช้อ่านหน้าจอ) ส่วน restart ต้องการเพิ่มว่า Claude ต้องรันจาก bash หรือ zsh ใน terminal (แบบ tab ของแอป Herdr) ดูเฉพาะ terminal บนเครื่องนี้ ไม่นับ terminal บนเครื่องอื่น และดู herdr-core เฉพาะตอนที่มันเปิดอยู่ ไม่เปิดให้เอง
+  - ถ้าเริ่มพิมพ์ใน session หลังจากที่สคริปต์อ่านหน้าจอไปแล้ว สิ่งที่สคริปต์ส่งจะไปต่อท้ายข้อความที่พิมพ์ไว้ (herdr-core รอให้หยุดพิมพ์ก่อนส่ง แต่ไม่ล้างข้อความที่พิมพ์ค้าง ฝั่ง tmux ก็มีช่วงนี้เหมือนกัน)
+  - ถ้าสคริปต์บอกว่าไม่เจอ session ที่สั่ง หรือไม่มี tmux/herdr-core server ต้องปิดเปิดเอง
 - command ทั้งหกไม่รับ argument ข้อความที่พิมพ์ต่อท้ายไม่ถูกใส่ลงในคำสั่ง shell และ Claude ถูกสั่งให้ไม่ทำตาม ถ้าต้องใช้ flag อื่น (`--only '<regex>'`, `--scope user,project`, `--no-marketplaces`, `-y`) ให้รัน script ตรงจาก terminal
 - install ของ project ที่ไม่มีโฟลเดอร์แล้วจะถูกข้ามพร้อมบอกเหตุผล
 - ข้าม plugin ที่ไม่ได้มาจาก marketplace (`@synced`, `@inline`, `@skills-dir`) แล้วบอกรายชื่อไว้ท้ายสรุป
@@ -114,9 +115,9 @@ limit หมดเร็วเพราะขนาดของ context ไม�
 - ถ้าบทสนทนาเริ่มจาก handoff หรือโดน compact มา จะสรุปเท่าที่เห็น แล้วบอกว่าก่อนหน้านั้นรู้แค่จากสรุป
 - ถามเป็นประโยคธรรมดาก็ได้ เช่น "เมื่อกี้คุยถึงไหนแล้ว" Claude อาจเรียก skill นี้เอง
 
-## ใช้ Claude Code ผ่าน tmux หรือ herdr + Remote Control
+## ใช้ Claude Code ผ่าน tmux + Remote Control
 
-ให้ Claude ของแต่ละ repo รันค้างใน tmux หรือ herdr แล้วคุยต่อจากมือถือหรือ Claude desktop ได้ ดูขั้นตอนตั้งค่า (`settings.json`, `~/.tmux.conf` หรือ herdr, `~/.zshrc`, ssh ผ่าน Tailscale) ที่ [guides/tmux-remote-control.md](guides/tmux-remote-control.md) เป็นคำแนะนำ ไม่มี script ติดตั้งให้
+ให้ Claude ของแต่ละ repo รันค้างใน tmux แล้วคุยต่อจากมือถือหรือ Claude desktop ได้ ดูขั้นตอนตั้งค่า (`settings.json`, `~/.tmux.conf`, `~/.zshrc`, ssh ผ่าน Tailscale) ที่ [guides/tmux-remote-control.md](guides/tmux-remote-control.md) เป็นคำแนะนำ ไม่มี script ติดตั้งให้
 
 ## พัฒนา
 
