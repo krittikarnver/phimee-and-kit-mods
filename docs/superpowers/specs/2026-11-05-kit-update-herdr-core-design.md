@@ -58,7 +58,7 @@
 
 1. เปิด `env -u HC_TERMINAL_ID $HC_BIN connect` (`HC_BIN` = `KIT_UPDATE_HC_BIN`, default `hc`) ส่ง `hello` แบบ framed
 2. channel 0: `terminal.get` เอา `cols`, `rows` แล้ว `terminal.attach` ด้วย `observe: true` ขนาดนั้น
-3. ต่อ DATA frame บน channel นั้นเข้าด้วยกันจนเจอ `\e[?9001h` หรือ `\e[?9001l` ตัวแรก หน้าจอคือ byte หลัง `0x18` ตัวแรกจนถึงก่อน `\e[?9001` ส่วนที่ตามมาทิ้ง frame ชนิดอื่นบน channel นั้นข้าม ส่ง CREDIT ตามที่อ่าน (เริ่มที่ 256 KiB จึงแทบไม่ต้องใช้) แล้วส่ง CLOSE และปิด
+3. ต่อ DATA frame บน channel นั้นเข้าด้วยกันจนเจอ `\e[?9001h` หรือ `\e[?9001l` ตัวแรก หน้าจอคือ byte หลัง `0x18` ตัวแรกจนถึงก่อน `\e[?9001` ส่วนที่ตามมาทิ้ง frame ชนิดอื่นบน channel นั้นข้าม ไม่ส่ง CREDIT **(Claude เลือก)**: window เริ่มที่ 256 KiB และยังไม่รู้รูปแบบ payload ของ CREDIT หน้าจอแรกที่ใหญ่กว่านั้นจะหมดเวลาแล้วนับเป็นอ่านไม่ได้ จากนั้นส่ง CLOSE และปิด
 4. หมดเวลารวม 5 วินาทีก่อนเจอจุดจบ, ได้ error จาก JSON-RPC, CLOSE จาก core หรือ header ของ frame ผิดรูป (len เกิน 16 MiB) = ล้มเหลว ห้ามพิมพ์หน้าจอที่ยังไม่ครบ
 
 ทำเป็น perl **(Claude เลือก)** เพราะ bash ทำ pipe สองทางที่อ่าน binary ไม่ได้ ส่วน perl มากับ macOS และ Linux ทั่วไป ไม่ต้องลงอะไรเพิ่ม
@@ -69,7 +69,7 @@
 
 ส่วน herdr แทนด้วย herdr-core:
 
-1. `hc ls --json` ได้ = มี server เลือก `agent == "claude-code"`, `state == "live"`, address ไม่มี `/`
+1. เรียก `hc` เฉพาะเมื่อ core เปิดอยู่แล้ว **(Claude เลือก รอกิตยืนยัน)**: `pgrep -x -U <uid> herdr-core` เจอ หรือ `HC_TERMINAL_ID` มีค่าและไม่ได้อยู่ใน tmux เพราะทุกคำสั่ง `hc` จะเปิด core ขึ้นมาเองถ้ายังไม่มี แล้ว `hc ls --json` ได้ = มี server เลือก `agent == "claude-code"`, `state == "live"`, address ไม่มี `/`
 2. ชื่อที่แสดง: `"<name หรือ where หรือชื่อโฟลเดอร์ของ cwd> (hc <address>)"`
 3. ข้าม terminal ของตัวเอง (`address == $HC_TERMINAL_ID`)
 4. `status` เป็น `working` = busy, `blocked` = waiting on a question, นอกนั้น (`idle`, `done`, `error`, ไม่มีสถานะ) ไปต่อที่หน้าจอ **(Claude เลือก)**: `error` คือจบ turn ด้วย error (เช่นติด rate limit) และ Claude ที่ไม่รายงานสถานะเลยก็ยังเช็กได้ด้วยหน้าจอแบบ tmux ซึ่งแยก busy / question / draft เองอยู่แล้ว
@@ -82,11 +82,11 @@
 
 1. `hc get <t> --json` ได้ Claude pid = `foreground.pid` และ shell pid = `pid` ถ้า `foreground` เป็น `null` หรือ pid นั้นไม่ใช่ Claude ที่มี session file (`is_claude`) ให้ข้าม
 2. ถ้า Claude คือ program ของ terminal เอง (`foreground.pid == pid`) ให้ข้ามด้วยเหตุผล "no shell to relaunch in"
-3. ถ้ามี tmux อยู่เหนือ Claude ทำแบบเดิม (tmux_above / SEEN)
+3. ไม่ต้องเช็ก tmux อยู่เหนือ Claude **(Claude เลือก)**: Claude ที่ผ่านข้อ 4 มี parent เป็น shell ของ terminal จึงไม่มี tmux คั่นได้ ส่วน terminal ที่รัน tmux อยู่ program หน้าสุดคือ tmux client จึงตกข้อ 1 และฝั่ง tmux ดูแล session ใน tmux เอง
 4. parent ของ Claude ต้องเป็น shell pid และ `shell_ok` ผ่าน ไม่งั้นข้ามแบบเดิม
 5. `add hc <address> <where> …` label ใช้ `where` ถ้าไม่มีใช้ชื่อโฟลเดอร์ของ cwd
 
-worker เปิดใน herdr-core เมื่อ `HC_TERMINAL_ID` มีค่า หรือไม่ได้อยู่ใน tmux แต่มี herdr-core server ไม่งั้นเปิดใน tmux (ลำดับเดิม แค่แทน herdr ด้วย hc)
+worker เปิดใน herdr-core เมื่อ `HC_TERMINAL_ID` มีค่าและมี herdr-core server หรือไม่ได้อยู่ใน tmux แต่มี herdr-core server ไม่งั้นเปิดใน tmux (ลำดับเดิม แค่แทน herdr ด้วย hc)
 
 ```
 env -u HC_TERMINAL_ID hc run --bg --no-parent --name kit-update-restart-<HHMMSS> --cwd <KU_DIR> -- env PATH=<PATH> LANG=<LANG> bash <restart-worker.sh> <state>
