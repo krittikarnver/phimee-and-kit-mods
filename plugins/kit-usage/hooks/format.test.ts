@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { bandText, contextLine, formatK, formatReset } from './format'
+import { contextLine, formatK, formatReset } from './format'
 
 const now = Date.UTC(2026, 9, 12, 6, 0) // 13:00 Bangkok
 
@@ -29,7 +29,6 @@ test('context line with rate limits and cost', () => {
 test('warns near compaction', () => {
   const u = { context: { tokens: 180_000, window: 200_000, percent: 90 }, rateLimits: [] }
   expect(contextLine(u, now)).toContain('ใกล้ compact แล้ว')
-  expect(bandText(u, now)).toBe('⚠️ context 90% (180k/200k)')
 })
 
 test('no figures yet', () => {

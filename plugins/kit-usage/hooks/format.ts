@@ -55,9 +55,3 @@ export const contextLine = (u: UsageFigures, now: number): string => {
 
   return `[kit-usage] ${parts.join(' · ')}${warn}`
 }
-
-/** The shorter band above the prompt. */
-export const bandText = (u: UsageFigures, now: number): string => {
-  const parts = [contextPart(u.context), ...u.rateLimits.map(r => ratePart(r, now))]
-  return `${isNearCompact(u.context) ? '⚠️' : '📊'} ${parts.join(' · ')}`
-}
