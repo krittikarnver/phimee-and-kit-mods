@@ -11,7 +11,6 @@ export const MAX_AUTO_GEN = 5
 export const RATE_MAX_AGE_MS = 15 * 60_000
 export const BUSY: readonly string[] = ['pending', 'running', 'waiting']
 const FIVE_HOUR_MAX = 90
-const SEVEN_DAY_MAX = 85
 const BKK_OFFSET_MS = 7 * 60 * 60 * 1000
 
 export type Level = 'soft' | 'hard'
@@ -117,15 +116,13 @@ export const pickLimits = (
   return null
 }
 
-/** Whether the next conversation may carry on by itself; any missing figure means wait. */
+/** Whether the next conversation may carry on by itself; a missing 5-hour figure means wait. The 7-day limit is not checked. */
 export const guard = (mode: Mode, gen: number, limits: readonly Rate[] | null): Verdict => {
   if (mode !== 'auto') return { auto: false }
   if (gen > MAX_AUTO_GEN) return { auto: false, blocked: `ทำต่อเองครบ ${MAX_AUTO_GEN} รอบแล้วโดยผู้ใช้ไม่ได้ตอบ` }
   if (!limits) return { auto: false, blocked: 'ไม่มีตัวเลข rate limit' }
   const five = limits.find(r => r.kind === 'five_hour')
-  const seven = limits.find(r => r.kind === 'seven_day')
   if (!five || five.percentUsed >= FIVE_HOUR_MAX) return { auto: false, blocked: `limit 5 ชม. ไม่มีตัวเลขหรือถึง ${FIVE_HOUR_MAX}% แล้ว` }
-  if (!seven || seven.percentUsed >= SEVEN_DAY_MAX) return { auto: false, blocked: `limit 7 วัน ไม่มีตัวเลขหรือถึง ${SEVEN_DAY_MAX}% แล้ว` }
   return { auto: true }
 }
 

@@ -70,15 +70,15 @@ test('guard', () => {
   for (const v of [
     guard('auto', 6, both),
     guard('auto', 1, null),
-    guard('auto', 1, [both[0]]),
     guard('auto', 1, [both[1]]),
     guard('auto', 1, [{ kind: 'five_hour', percentUsed: 90 }, both[1]]),
-    guard('auto', 1, [both[0], { kind: 'seven_day', percentUsed: 85 }]),
   ]) {
     expect(v.auto).toBe(false)
     expect('blocked' in v && typeof v.blocked).toBe('string')
   }
   expect(guard('auto', 1, [{ kind: 'five_hour', percentUsed: 89.9 }, both[1]])).toEqual({ auto: true })
+  expect(guard('auto', 1, [both[0]])).toEqual({ auto: true })
+  expect(guard('auto', 1, [both[0], { kind: 'seven_day', percentUsed: 100 }])).toEqual({ auto: true })
 })
 
 test('file names never collide', () => {
